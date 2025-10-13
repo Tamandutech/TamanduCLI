@@ -1,6 +1,10 @@
 import asyncio
 import os
 import platform
+import queue
+import threading
+import time
+from typing import Callable, Optional
 
 from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -46,93 +50,213 @@ class Terminal:
         return input(f"{APP_TAG} {TERM_COLOR[color]}{message}{TERM_COLOR['RESET']}")
 
 
-# Section: BLE Connection
-UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-UART_RX_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
-UART_TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+# Section: Nordic UART Service (NUS) Implementation
+class NordicUARTService:
+    """
+    Nordic UART Service implementation using NimBLE stack.
+    Provides bidirectional communication with IoT devices.
+    """
+    
+    # Nordic UART Service UUIDs
+    NUS_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+    NUS_RX_CHAR_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  # Write characteristic
+    NUS_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  # Notify characteristic
+    
+    def __init__(self):
+        self.client: Optional[BleakClient] = None
+        self.is_connected = False
+        self.message_queue = queue.Queue()
+        self.rx_characteristic = None
+        self.tx_characteristic = None
+        self.message_handler: Optional[Callable[[str], None]] = None
+        
+    def set_message_handler(self, handler: Callable[[str], None]):
+        """Set the callback function for received messages."""
+        self.message_handler = handler
+    
+    def _handle_rx_data(self, characteristic: BleakGATTCharacteristic, data: bytearray):
+        """Handle incoming data from the TX characteristic (notifications)."""
+        try:
+            message = data.decode('utf-8')
+            Terminal.log(f"📨 Received: {message}", "GREEN")
+            if self.message_handler:
+                self.message_handler(message)
+        except UnicodeDecodeError:
+            Terminal.log(f"📨 Received (raw): {data.hex()}", "GREEN")
+            if self.message_handler:
+                self.message_handler(data.hex())
+    
+    def _handle_disconnect(self, client: BleakClient):
+        """Handle device disconnection."""
+        Terminal.log("🔌 Device disconnected", "RED")
+        self.is_connected = False
+        # Cancel all running tasks
+        for task in asyncio.all_tasks():
+            if task != asyncio.current_task():
+                task.cancel()
+    
+    async def connect(self, device: BLEDevice) -> bool:
+        """Connect to a BLE device and set up NUS."""
+        try:
+            Terminal.log(f"🔗 Connecting to {device.name} ({device.address})...", "CYAN")
+            
+            self.client = BleakClient(device.address, disconnected_callback=self._handle_disconnect)
+            await self.client.connect()
+            
+            if not self.client.is_connected:
+                Terminal.log("❌ Failed to connect to device", "RED")
+                return False
+            
+            # Get the Nordic UART Service
+            nus_service = self.client.services.get_service(self.NUS_SERVICE_UUID)
+            if not nus_service:
+                Terminal.log("❌ Nordic UART Service not found on device", "RED")
+                await self.client.disconnect()
+                return False
+            
+            # Get characteristics
+            self.rx_characteristic = nus_service.get_characteristic(self.NUS_RX_CHAR_UUID)
+            self.tx_characteristic = nus_service.get_characteristic(self.NUS_TX_CHAR_UUID)
+            
+            if not self.rx_characteristic or not self.tx_characteristic:
+                Terminal.log("❌ Required characteristics not found", "RED")
+                await self.client.disconnect()
+                return False
+            
+            # Start notifications on TX characteristic
+            await self.client.start_notify(self.tx_characteristic, self._handle_rx_data)
+            
+            self.is_connected = True
+            Terminal.log("✅ Connected to Nordic UART Service", "GREEN")
+            return True
+            
+        except Exception as e:
+            Terminal.log(f"❌ Connection error: {str(e)}", "RED")
+            return False
+    
+    async def send_message(self, message: str) -> bool:
+        """Send a message to the connected device."""
+        if not self.is_connected or not self.rx_characteristic:
+            Terminal.log("❌ Not connected to device", "RED")
+            return False
+        
+        try:
+            data = message.encode('utf-8')
+            await self.client.write_gatt_char(self.rx_characteristic, data, response=True)
+            Terminal.log(f"📤 Sent: {message}", "BLUE")
+            return True
+        except Exception as e:
+            Terminal.log(f"❌ Send error: {str(e)}", "RED")
+            return False
+    
+    async def disconnect(self):
+        """Disconnect from the device."""
+        if self.client and self.is_connected:
+            await self.client.disconnect()
+            self.is_connected = False
+            Terminal.log("🔌 Disconnected from device", "YELLOW")
+    
+    async def __aenter__(self):
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.disconnect()
+
+# Legacy UUIDs for backward compatibility
+UART_SERVICE_UUID = NordicUARTService.NUS_SERVICE_UUID
+UART_RX_CHAR_UUID = NordicUARTService.NUS_RX_CHAR_UUID
+UART_TX_CHAR_UUID = NordicUARTService.NUS_TX_CHAR_UUID
 STREAM_UUID = "3a8328fc-3768-46d2-b371-b34864ce8025"
 
-
 async def main():
-    Terminal.log("Scanning for devices...")
+    """Main function implementing Nordic UART Service CLI."""
+    Terminal.log("🔍 Scanning for BLE devices with Nordic UART Service...", "CYAN")
 
-    has_any_devices = False
-    while not has_any_devices:
-        devices = await BleakScanner.discover(5.0)
-        devices = [i for i in devices if i.name]
-        has_any_devices = bool(devices)
-        if not has_any_devices:
-            Terminal.log("No devices found. Retrying...", "YELLOW")
+    # Scan for devices
+    devices = []
+    while not devices:
+        discovered_devices = await BleakScanner.discover(5.0)
+        devices = [d for d in discovered_devices if d.name]
+        if not devices:
+            Terminal.log("❌ No devices found. Retrying in 3 seconds...", "YELLOW")
+            await asyncio.sleep(3)
 
+    # Display available devices
+    Terminal.log(f"📱 Found {len(devices)} device(s):", "GREEN")
     enumerated_devices: list[BLEDevice] = []
-    for index, d in enumerate(devices):
-        Terminal.log(f"{index}. " + d.name, "CYAN")
-        enumerated_devices.append(d)
+    for index, device in enumerate(devices):
+        Terminal.log(f"  {index}. {device.name} ({device.address})", "CYAN")
+        enumerated_devices.append(device)
 
-    valid_input = False
-    while not valid_input:
-        option_input = int(Terminal.input("Enter the device number: ", "CYAN"))
-        if option_input >= len(devices) or option_input < 0:
-            Terminal.log("Invalid device number!", "RED")
-            continue
-        valid_input = True
-
-    choosen_device = enumerated_devices[option_input]
-
-    Terminal.log(f"Connecting to {choosen_device}...")
-
-    def handle_disconnect(_: BleakClient):
-        Terminal.log("Device was disconnected.", "RED")
-        # cancelling all tasks effectively ends the program
-        for task in asyncio.all_tasks():
-            task.cancel()
-
-    def handle_rx(_: BleakGATTCharacteristic, data: bytearray):
-        Terminal.log(f"received: {data}")
-
-    async with BleakClient(
-        choosen_device.address, disconnected_callback=handle_disconnect
-    ) as client:
-        await client.start_notify(UART_TX_CHAR_UUID, handle_rx)
-
-        nus = client.services.get_service(UART_SERVICE_UUID)
-        rx_char = nus.get_characteristic(UART_RX_CHAR_UUID)
-        services = client.services.characteristics
-        services = {str(j) for i, j in services.items()}
-        Terminal.log(f"Services: {services}", "GREEN")
-        Terminal.log("Running bluetooth terminal:", "CYAN")
-        Terminal.log("Type 'close' to exit the app.", "YELLOW")
-        while True:
-            command = Terminal.input("$ ", "CYAN")
-            Terminal.log(f"Running {command}...")
-
-            if command == "close":
-                Terminal.log("Closing app...", "RED")
-                break
+    # Device selection
+    selected_device = None
+    while selected_device is None:
+        try:
+            option_input = Terminal.input("🔢 Enter device number: ", "CYAN")
+            device_index = int(option_input)
+            if 0 <= device_index < len(devices):
+                selected_device = enumerated_devices[device_index]
             else:
-                Terminal.log(f"{command.encode("utf-8")}")
+                Terminal.log("❌ Invalid device number!", "RED")
+        except ValueError:
+            Terminal.log("❌ Please enter a valid number!", "RED")
 
+    # Connect using Nordic UART Service
+    async with NordicUARTService() as nus:
+        if not await nus.connect(selected_device):
+            Terminal.log("❌ Failed to connect to device", "RED")
+            return
+
+        Terminal.log("🚀 Nordic UART Service CLI ready!", "GREEN")
+        Terminal.log("💡 Commands:", "YELLOW")
+        Terminal.log("  • Type any message to send to the device", "WHITE")
+        Terminal.log("  • Type 'quit' or 'exit' to close the app", "WHITE")
+        Terminal.log("  • Messages from the device will appear automatically", "WHITE")
+        Terminal.log("─" * 50, "DARK_GRAY")
+
+        # Main CLI loop
+        try:
+            while nus.is_connected:
                 try:
-                    await asyncio.wait_for(
-                        client.write_gatt_char(
-                            rx_char, command.encode("utf-8"), response=True
+                    # Get user input with timeout to allow for received messages
+                    message = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None, lambda: Terminal.input("📤 Send: ", "CYAN")
                         ),
-                        timeout=5,
+                        timeout=0.1
                     )
+                    
+                    if message.lower() in ['quit', 'exit', 'close']:
+                        Terminal.log("👋 Closing Nordic UART Service CLI...", "YELLOW")
+                        break
+                    
+                    if message.strip():
+                        await nus.send_message(message)
+                        
                 except asyncio.TimeoutError:
-                    Terminal.log(f"{command} timeout.", "RED")
-
-                # await client.write_gatt_char(
-                #     rx_char, command.encode("utf-8"), response=True
-                # )
-
-            await asyncio.sleep(1)
+                    # Timeout is expected - allows for continuous message reception
+                    await asyncio.sleep(0.1)
+                    continue
+                except KeyboardInterrupt:
+                    Terminal.log("\n👋 Interrupted by user", "YELLOW")
+                    break
+                    
+        except Exception as e:
+            Terminal.log(f"❌ Error in main loop: {str(e)}", "RED")
+        
+        Terminal.log("🔌 Disconnecting...", "YELLOW")
 
 
 if __name__ == "__main__":
     try:
+        Terminal.log("🚀 Starting Nordic UART Service CLI...", "BRIGHT_GREEN")
         asyncio.run(main())
-        # asyncio.run(uart_terminal())
     except asyncio.CancelledError:
-        # task is cancelled on disconnect, so we ignore this error
-        pass
+        # Task is cancelled on disconnect, so we ignore this error
+        Terminal.log("👋 Application terminated", "YELLOW")
+    except KeyboardInterrupt:
+        Terminal.log("\n👋 Application interrupted by user", "YELLOW")
+    except Exception as e:
+        Terminal.log(f"❌ Unexpected error: {str(e)}", "RED")
+    finally:
+        Terminal.log("🔚 Nordic UART Service CLI closed", "DARK_GRAY")
