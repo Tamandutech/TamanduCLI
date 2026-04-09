@@ -28,11 +28,17 @@ from commands.help_handlers import (
     cmd_help,
     try_feed_help_session,
 )
+from commands.param.param_get_handlers import (
+    capture_param_get_res_from_ble,
+    cmd_param_get,
+    try_feed_param_get_session,
+)
 from commands.param.param_list_handlers import (
     capture_param_list_res_from_ble,
     cmd_param_list,
     try_feed_param_list_session,
 )
+from commands.param.param_set_handlers import cmd_param_set
 from protocol_utils import (
     CommandInvocation,
     digest_invocation_parameters,
@@ -52,6 +58,7 @@ __all__ = [
     "CommandInvocation",
     "NusPort",
     "capture_help_res_from_ble",
+    "capture_param_get_res_from_ble",
     "capture_param_list_res_from_ble",
     "digest_invocation_parameters",
     "dispatch_cli_command",
@@ -64,6 +71,7 @@ __all__ = [
     "register_incoming_command",
     "split_top_level_commas",
     "try_feed_help_session",
+    "try_feed_param_get_session",
     "try_feed_param_list_session",
     "unquote_field",
 ]
@@ -139,6 +147,8 @@ def _incoming_ping(inv: CommandInvocation) -> None:
 
 register_cli_command("help", cmd_help)
 register_cli_command("param_list", cmd_param_list)
+register_cli_command("param_get", cmd_param_get)
+register_cli_command("param_set", cmd_param_set)
 register_cli_command("echo", cmd_echo)
 register_cli_command("ping", cmd_ping)
 
