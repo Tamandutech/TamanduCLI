@@ -144,7 +144,7 @@ Para outros formatos no fio (não a invocação principal da CLI), use `src/prot
 
 ### Comandos embutidos
 
-Os handlers existentes são registrados em `src/commands/command_handlers.py` (`help`, `param_list`, `echo`, `ping`). Ajuda via BLE e a coleta `help_res(...)` estão em `src/commands/help_handlers.py`; `param_list` fica em `src/commands/param/param_list_handlers.py`.
+Os comandos embutidos da CLI usam a mesma API `register_cli_command` que extensões (`help`, `param_list`, `echo`, `ping` em `src/commands/command_handlers.py`). Ajuda via BLE e a coleta `help_res(...)` estão em `src/commands/help_handlers.py`; `param_list` fica em `src/commands/param/param_list_handlers.py`.
 
 #### Script de teste
 Teste rápido do cliente BLE Nordic UART:

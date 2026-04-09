@@ -7,6 +7,8 @@ Extending:
   3. Call register_cli_command("my_cmd", my_cmd) at import time.
   4. Add ``import my_commands`` at the bottom of this file (or your app entry).
 
+Built-in commands use the same ``register_cli_command`` / ``register_incoming_command`` API as plugins.
+
 Incoming BLE lines use the same command_name(...) shape; register with register_incoming_command.
 """
 
@@ -66,6 +68,19 @@ class NusPort(Protocol):
 IncomingMessageHandler = Callable[[CommandInvocation], None]
 CLICommandHandler = Callable[[CommandInvocation, NusPort], Awaitable[None]]
 
+CLI_COMMAND_HANDLERS: dict[str, CLICommandHandler] = {}
+INCOMING_MESSAGE_HANDLERS: dict[str, IncomingMessageHandler] = {}
+
+
+def register_cli_command(name: str, handler: CLICommandHandler) -> None:
+    """Register or replace a CLI (async) handler. Name is stored lowercased."""
+    CLI_COMMAND_HANDLERS[name.lower()] = handler
+
+
+def register_incoming_command(name: str, handler: IncomingMessageHandler) -> None:
+    """Register or replace a sync handler for incoming BLE lines (same command shape)."""
+    INCOMING_MESSAGE_HANDLERS[name.lower()] = handler
+
 
 def _terminal():
     import main as main_module
@@ -92,19 +107,6 @@ def cmd_default(inv: CommandInvocation) -> None:
     _ = inv
 
 
-CLI_COMMAND_HANDLERS: dict[str, CLICommandHandler] = {
-    "help": cmd_help,
-    "param_list": cmd_param_list,
-    "echo": cmd_echo,
-    "ping": cmd_ping,
-}
-
-
-def register_cli_command(name: str, handler: CLICommandHandler) -> None:
-    """Register or replace a CLI (async) handler. Name is stored lowercased."""
-    CLI_COMMAND_HANDLERS[name.lower()] = handler
-
-
 def _incoming_echo(inv: CommandInvocation) -> None:
     _terminal().log(f"🔊 Echo: {inv.raw_arguments}", "CYAN")
 
@@ -114,15 +116,13 @@ def _incoming_ping(inv: CommandInvocation) -> None:
     _terminal().log("🏓 pong", "GREEN")
 
 
-INCOMING_MESSAGE_HANDLERS: dict[str, IncomingMessageHandler] = {
-    "echo": _incoming_echo,
-    "ping": _incoming_ping,
-}
+register_cli_command("help", cmd_help)
+register_cli_command("param_list", cmd_param_list)
+register_cli_command("echo", cmd_echo)
+register_cli_command("ping", cmd_ping)
 
-
-def register_incoming_command(name: str, handler: IncomingMessageHandler) -> None:
-    """Register or replace a sync handler for incoming BLE lines (same command shape)."""
-    INCOMING_MESSAGE_HANDLERS[name.lower()] = handler
+register_incoming_command("echo", _incoming_echo)
+register_incoming_command("ping", _incoming_ping)
 
 
 def is_registered_command(message: str) -> bool:

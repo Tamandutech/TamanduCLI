@@ -144,7 +144,7 @@ For other wire formats (not the main CLI invocation), use `src/protocol_utils.py
 
 ### Built-in commands
 
-Existing handlers are registered in `src/commands/command_handlers.py` (`help`, `param_list`, `echo`, `ping`). Help over BLE and `help_res(...)` collection is in `src/commands/help_handlers.py`; `param_list` lives in `src/commands/param/param_list_handlers.py`.
+Built-in CLI commands use the same `register_cli_command` API as extensions (`help`, `param_list`, `echo`, `ping` in `src/commands/command_handlers.py`). Help over BLE and `help_res(...)` collection is in `src/commands/help_handlers.py`; `param_list` lives in `src/commands/param/param_list_handlers.py`.
 
 #### Test script
 Smoke-test the BLE Nordic UART client:
