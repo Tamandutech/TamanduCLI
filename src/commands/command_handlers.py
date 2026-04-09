@@ -16,6 +16,13 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable, Protocol, runtime_checkable
 
+# --- ADD NEW COMMAND: imports ---
+# Import your async handler (and any BLE helpers) from your module, e.g.:
+#   from commands.my_handlers import cmd_mything, capture_mything_res_from_ble, try_feed_mything_session
+# Parameter-related commands often live under ``commands.param/``.
+# If the device streams a custom *_res(...) protocol, import capture/try_feed helpers here and
+# register their use in ``main.py`` inside ``ble_dispatch_line`` (same pattern as help / param_list).
+
 from commands.help_handlers import (
     capture_help_res_from_ble,
     cmd_help,
@@ -34,6 +41,10 @@ from protocol_utils import (
     split_top_level_commas,
     unquote_field,
 )
+
+# --- ADD NEW COMMAND: public re-exports (optional) ---
+# If ``main.py`` or other code must import BLE helpers from this package, add names here and
+# in the ``__all__`` list below.
 
 __all__ = [
     "CLI_COMMAND_HANDLERS",
@@ -92,6 +103,9 @@ def is_command_invocation(message: str) -> bool:
     return parse_command_invocation(message) is not None
 
 
+# --- ADD NEW COMMAND: inline CLI handlers (optional) ---
+# For small commands you can define ``async def cmd_*`` here; larger ones belong in their own module.
+
 async def cmd_echo(inv: CommandInvocation, nus: NusPort) -> None:
     _ = nus
     _terminal().log(f"🔊 Echo: {inv.raw_arguments}", "CYAN")
@@ -107,6 +121,10 @@ def cmd_default(inv: CommandInvocation) -> None:
     _ = inv
 
 
+# --- ADD NEW COMMAND: incoming BLE handlers (optional) ---
+# Sync handlers for lines the device sends as command_name(...). Register each with
+# ``register_incoming_command`` in the block below.
+
 def _incoming_echo(inv: CommandInvocation) -> None:
     _terminal().log(f"🔊 Echo: {inv.raw_arguments}", "CYAN")
 
@@ -116,10 +134,16 @@ def _incoming_ping(inv: CommandInvocation) -> None:
     _terminal().log("🏓 pong", "GREEN")
 
 
+# --- ADD NEW COMMAND: register CLI handlers ---
+# One line per command: ``register_cli_command("name", cmd_name)`` — must match the first token users type.
+
 register_cli_command("help", cmd_help)
 register_cli_command("param_list", cmd_param_list)
 register_cli_command("echo", cmd_echo)
 register_cli_command("ping", cmd_ping)
+
+# --- ADD NEW COMMAND: register incoming BLE handlers ---
+# For device → host lines you want to handle in Python (same ``command_name(...)`` syntax).
 
 register_incoming_command("echo", _incoming_echo)
 register_incoming_command("ping", _incoming_ping)
@@ -149,4 +173,6 @@ def handle_incoming_message(message: str) -> None:
     handler(inv)
 
 
-# --- Optional local plugins (add your own: ``import my_robot_commands``) ---
+# --- ADD NEW COMMAND: load external plugin modules (optional) ---
+# After your handler file calls ``register_cli_command`` at import time, import it here so it runs:
+#   import my_robot_commands  # noqa: F401

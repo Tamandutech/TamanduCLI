@@ -11,6 +11,8 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
+# ADD NEW COMMAND (BLE list/stream): import capture_*_from_ble and try_feed_*_session from
+# commands.command_handlers (after exporting them there), then call them inside ble_dispatch_line below.
 from commands.command_handlers import (
     capture_help_res_from_ble,
     capture_param_list_res_from_ble,
@@ -232,6 +234,8 @@ async def main():
             return
 
         def ble_dispatch_line(message: str) -> None:
+            # ADD NEW COMMAND (BLE list/stream): buffer and session-dispatch device lines here
+            # (mirror help / param_list: capture_* first, then try_feed_* before handle_incoming_message).
             capture_help_res_from_ble(message)
             capture_param_list_res_from_ble(message)
             if try_feed_help_session(message):

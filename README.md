@@ -52,7 +52,32 @@ $ uv run src/main.py
 
 ## Adicionar um novo comando
 
-Você pode estender a CLI sem editar `main.py`. A análise e o despacho ficam em `src/commands/command_handlers.py` e `src/protocol_utils.py`; sua parte é registrar um handler que recebe uma invocação **digesta** e acesso BLE opcional. Comandos orientados a parâmetros ficam em `src/commands/param/`.
+A análise e o despacho ficam em `src/commands/command_handlers.py` e `src/protocol_utils.py`. Você registra handlers que recebem uma invocação **digesta** e acesso BLE opcional.
+
+**Na maioria dos casos basta editar `command_handlers.py`.** Só é necessário alterar **`src/main.py`** se o dispositivo enviar um **protocolo de resposta** (como `help_res` / `param_list_res`) que precise de buffer e de uma sessão de coleta ativa—veja a lista abaixo.
+
+### Lista: `command_handlers.py` e `main.py`
+
+Os arquivos têm comentários `ADD NEW COMMAND` nos mesmos pontos; use esta lista para não esquecer nada.
+
+#### `src/commands/command_handlers.py`
+
+| Etapa | Onde (busque o comentário)                            | O que fazer                                                                                                                                                                                         |
+| ----- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | **`ADD NEW COMMAND: imports`**                        | `import` do seu `cmd_*` a partir do seu módulo (ex.: `commands.meu_modulo` ou `commands.param.*`). Se houver respostas em lista no fio, importe também `capture_*_from_ble` e `try_feed_*_session`. |
+| 2     | **`ADD NEW COMMAND: public re-exports`**              | Se o `main.py` precisar importar helpers BLE deste pacote, inclua-os no bloco de imports e em **`__all__`**.                                                                                        |
+| 3     | **`ADD NEW COMMAND: inline CLI handlers`**            | Opcional: `async def cmd_*` pequenos neste arquivo em vez de outro módulo.                                                                                                                          |
+| 4     | **`ADD NEW COMMAND: incoming BLE handlers`**          | Opcional: `def _incoming_*` síncronos para linhas dispositivo → host no formato `nome_do_comando(...)`.                                                                                             |
+| 5     | **`ADD NEW COMMAND: register CLI handlers`**          | `register_cli_command("nome", cmd_nome)` — o nome deve coincidir com o primeiro token digitado.                                                                                                     |
+| 6     | **`ADD NEW COMMAND: register incoming BLE handlers`** | `register_incoming_command("nome", handler)` para cada handler de entrada.                                                                                                                          |
+| 7     | **`ADD NEW COMMAND: load external plugin modules`**   | No final: `import my_robot_commands  # noqa: F401` para um arquivo separado que chama `register_*` na importação.                                                                                   |
+
+#### `src/main.py` (somente para respostas BLE em lista/stream)
+
+| Etapa | Onde                                                        | O que fazer                                                                                                                                                                         |
+| ----- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | **Imports** de `commands.command_handlers`                  | Incluir `capture_*_from_ble` e `try_feed_*_session` (é preciso exportá-los antes em `command_handlers.py`).                                                                         |
+| 2     | **`ble_dispatch_line`** (dentro de `main()`, após conectar) | Chamar cada `capture_*_from_ble(message)`, depois cada `if try_feed_*_session(message): return`, e por fim `handle_incoming_message(message)`—mesma ordem de `help` / `param_list`. |
 
 ### Formato do comando
 
@@ -87,7 +112,7 @@ from commands.command_handlers import CommandInvocation, NusPort, register_cli_c
 
 ### Passo a passo: comando na CLI
 
-1. **Crie um novo módulo** em `src/`, por exemplo `src/my_robot_commands.py`.
+1. **Crie um novo módulo** no `sys.path` (muitas vezes `src/` ou `src/commands/`), por exemplo `src/my_robot_commands.py`.
 
 2. **Implemente um handler assíncrono** cujo primeiro nome de token coincida com o que você vai digitar (a comparação usa minúsculas):
 
@@ -109,7 +134,7 @@ from commands.command_handlers import CommandInvocation, NusPort, register_cli_c
    register_cli_command("set_speed", set_speed)
    ```
 
-3. **Carregue o módulo** depois que o registro em `src/commands/command_handlers.py` estiver definido. No **final** desse arquivo, adicione:
+3. **Carregue o módulo** depois que o registro em `src/commands/command_handlers.py` estiver definido. No **final** desse arquivo (lista §7, comentário `ADD NEW COMMAND: load external plugin modules`), adicione:
 
    ```python
    import my_robot_commands  # noqa: F401
@@ -123,7 +148,7 @@ Comandos registrados na CLI rodam **localmente** no app; use `nus.send_message(.
 
 ### Comandos BLE recebidos
 
-Se o dispositivo envia o mesmo formato `nome_do_comando(...)` e você quer tratamento no lado Python (logs, efeitos colaterais), registre um handler **síncrono**:
+Se o dispositivo envia o mesmo formato `nome_do_comando(...)` e você quer tratamento no lado Python (logs, efeitos colaterais), registre um handler **síncrono** (lista §4 e §6 em `command_handlers.py`):
 
 ```python
 from commands.command_handlers import CommandInvocation, register_incoming_command

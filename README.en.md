@@ -52,7 +52,32 @@ $ uv run src/main.py
 
 ## Adding a new command
 
-You can extend the CLI without editing `main.py`. Parsing and dispatch live in `src/commands/command_handlers.py` and `src/protocol_utils.py`; your job is to register a handler that receives a **digested** invocation and optional BLE access. Parameter-oriented commands belong under `src/commands/param/`.
+Parsing and dispatch live in `src/commands/command_handlers.py` and `src/protocol_utils.py`. You register handlers that receive a **digested** invocation and optional BLE access.
+
+**Most commands only touch `command_handlers.py`.** You must edit **`src/main.py`** only if the device streams a **custom response protocol** (like `help_res` / `param_list_res`) that must be buffered and fed into an active collection session—see the checklist below.
+
+### Checklist: `command_handlers.py` and `main.py`
+
+The source files contain `ADD NEW COMMAND` comments at the same spots; use this list so nothing is missed.
+
+#### `src/commands/command_handlers.py`
+
+| Step | Where (search for the comment)                        | What to do                                                                                                                                                                                                      |
+| ---- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | **`ADD NEW COMMAND: imports`**                        | `import` your `cmd_*` handler from your module (e.g. `commands.my_handlers` or `commands.param.*`). If you parse device list responses, also import your `capture_*_from_ble` and `try_feed_*_session` helpers. |
+| 2    | **`ADD NEW COMMAND: public re-exports`**              | If `main.py` must import BLE helpers from this package, add them to the import block and to **`__all__`**.                                                                                                      |
+| 3    | **`ADD NEW COMMAND: inline CLI handlers`**            | Optional: define small `async def cmd_*` here instead of another file.                                                                                                                                          |
+| 4    | **`ADD NEW COMMAND: incoming BLE handlers`**          | Optional: define sync `def _incoming_*` for device → host `command_name(...)` lines.                                                                                                                            |
+| 5    | **`ADD NEW COMMAND: register CLI handlers`**          | `register_cli_command("name", cmd_name)` — name must match what the user types (first token).                                                                                                                   |
+| 6    | **`ADD NEW COMMAND: register incoming BLE handlers`** | `register_incoming_command("name", handler)` for each incoming handler.                                                                                                                                         |
+| 7    | **`ADD NEW COMMAND: load external plugin modules`**   | At the bottom: `import my_robot_commands  # noqa: F401` so a separate file can call `register_*` at import time.                                                                                                |
+
+#### `src/main.py` (only for BLE list/stream responses)
+
+| Step | Where                                                    | What to do                                                                                                                                                                      |
+| ---- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | **Imports** from `commands.command_handlers`             | Add your `capture_*_from_ble` and `try_feed_*_session` symbols (they must be exported from `command_handlers.py` first).                                                        |
+| 2    | **`ble_dispatch_line`** (inside `main()`, after connect) | Call each `capture_*_from_ble(message)` first, then each `if try_feed_*_session(message): return`, then `handle_incoming_message(message)`—same order as `help` / `param_list`. |
 
 ### Command format
 
@@ -87,7 +112,7 @@ from commands.command_handlers import CommandInvocation, NusPort, register_cli_c
 
 ### Step-by-step: CLI command
 
-1. **Create a new module** under `src/`, for example `src/my_robot_commands.py`.
+1. **Create a new module** on `sys.path` (often `src/` or `src/commands/`), for example `src/my_robot_commands.py`.
 
 2. **Implement an async handler** whose first token name matches what you will type (lowercasing is applied when matching):
 
@@ -109,7 +134,7 @@ from commands.command_handlers import CommandInvocation, NusPort, register_cli_c
    register_cli_command("set_speed", set_speed)
    ```
 
-3. **Load the module** after the registry in `src/commands/command_handlers.py` is defined. At the **bottom** of that file, add:
+3. **Load the module** after the registry in `src/commands/command_handlers.py` is defined. At the **bottom** of that file (checklist §7, comment `ADD NEW COMMAND: load external plugin modules`), add:
 
    ```python
    import my_robot_commands  # noqa: F401
@@ -123,7 +148,7 @@ Registered CLI commands run **locally** in the app; use `nus.send_message(...)` 
 
 ### Incoming BLE commands
 
-If the device sends the same `command_name(...)` shape and you want Python-side handling (logging, side effects), register a **synchronous** handler:
+If the device sends the same `command_name(...)` shape and you want Python-side handling (logging, side effects), register a **synchronous** handler (checklist §4 and §6 in `command_handlers.py`):
 
 ```python
 from commands.command_handlers import CommandInvocation, register_incoming_command
