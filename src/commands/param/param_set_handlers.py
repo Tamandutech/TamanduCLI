@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from commands.command_handlers import cli_command
+
 if TYPE_CHECKING:
     from commands.command_handlers import NusPort
     from protocol_utils import CommandInvocation
@@ -17,6 +19,7 @@ def _terminal():
     return main_module.Terminal
 
 
+@cli_command
 async def cmd_param_set(inv: "CommandInvocation", nus: "NusPort") -> None:
     if len(inv.params) < 2:
         _terminal().log(

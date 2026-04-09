@@ -8,8 +8,9 @@ import asyncio
 from collections import deque
 from typing import TYPE_CHECKING, Optional
 
+from commands.command_handlers import cli_command
 from output_paths import OUTPUT_DIR, ensure_output_dir
-from protocol_utils import split_top_level_commas, unquote_field
+from protocol_utils import parse_command_message
 
 if TYPE_CHECKING:
     from commands.command_handlers import NusPort
@@ -29,49 +30,26 @@ def _terminal():
     return main_module.Terminal
 
 
-def _param_list_res_inner(line: str) -> Optional[str]:
-    s = line.strip()
-    low = s.lower()
-    key = "param_list_res("
-    if key not in low:
-        return None
-    idx = low.find(key)
-    if idx < 0:
-        return None
-    i = idx + len(key)
-    depth = 1
-    j = i
-    while j < len(s) and depth:
-        if s[j] == "(":
-            depth += 1
-        elif s[j] == ")":
-            depth -= 1
-        j += 1
-    if depth:
-        return None
-    return s[i : j - 1]
-
-
 def parse_param_list_res(line: str) -> Optional[tuple[int, str, str]]:
     """
+    Expects the whole stripped line to be only ``param_list_res(...)`` (see ``parse_command_message``).
+
     Three fields per line:
 
     - Header: param_list_res(0,"header",N)
     - Rows: param_list_res(index, param_name, value)
     """
-    inner = _param_list_res_inner(line)
-    if inner is None:
+    inv = parse_command_message(line)
+    if inv is None or inv.name != "param_list_res":
         return None
-    args = split_top_level_commas(inner)
+    args = inv.params
     if len(args) != 3:
         return None
     try:
         idx = int(args[0].strip())
     except ValueError:
         return None
-    name = unquote_field(args[1])
-    value = unquote_field(args[2])
-    return idx, name, value
+    return idx, args[1], args[2]
 
 
 def capture_param_list_res_from_ble(message: str) -> None:
@@ -168,6 +146,7 @@ def try_feed_param_list_session(message: str) -> bool:
     return fed
 
 
+@cli_command
 async def cmd_param_list(inv: "CommandInvocation", nus: "NusPort") -> None:
     """Send param_list(...) over BLE, collect param_list_res, write output/param_list.txt."""
     global _active_param_list_session

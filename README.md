@@ -54,23 +54,25 @@ $ uv run src/main.py
 
 A análise e o despacho ficam em `src/commands/command_handlers.py` e `src/protocol_utils.py`. Você registra handlers que recebem uma invocação **digesta** e acesso BLE opcional.
 
-**Na maioria dos casos basta editar `command_handlers.py`.** Só é necessário alterar **`src/main.py`** se o dispositivo enviar um **protocolo de resposta** (como `help_res` / `param_list_res`) que precise de buffer e de uma sessão de coleta ativa—veja a lista abaixo.
+**Comandos embutidos** em `src/commands/**` usam **`@cli_command`** e são **importados automaticamente** a partir de qualquer arquivo chamado `*_handlers.py` (veja `_load_command_handler_modules` em `command_handlers`). Você só precisa editar **`command_handlers.py`** para reexportar helpers BLE usados pelo **`main.py`**, e alterar **`src/main.py`** se o dispositivo enviar um **protocolo de resposta** (como `help_res` / `param_list_res`) que exija buffer e sessão de coleta.
 
-### Lista: `command_handlers.py` e `main.py`
+### Lista: embutido vs `main.py`
 
-Os arquivos têm comentários `ADD NEW COMMAND` nos mesmos pontos; use esta lista para não esquecer nada.
+#### Novo handler embutido (`src/commands/**/<nome>_handlers.py`)
 
-#### `src/commands/command_handlers.py`
+| Etapa | O que fazer |
+| ----- | ----------- |
+| 1     | Crie um módulo cujo nome termine em **`_handlers.py`** (ex.: `src/commands/motion_handlers.py` ou `src/commands/param/foo_handlers.py`). Ele é importado automaticamente ao carregar `commands.command_handlers`. |
+| 2     | Decore o handler assíncrono com **`@cli_command`** (nome inferido de `cmd_foo` → `foo`) ou **`@cli_command("nome_explicito")`**. Ainda pode usar **`register_cli_command`** manualmente. |
+| 3     | Se o `main.py` precisar de **`capture_*_from_ble`** / **`try_feed_*_session`**, adicione imports e entradas em **`__all__`** em **`command_handlers.py`** (mesmo bloco dos helpers de help/param). |
+| 4     | Conecte **`ble_dispatch_line`** no **`main.py`**: primeiro `capture_*`, depois `try_feed_*` com `return` antecipado, por fim `handle_incoming_message`—mesma ordem de `help` / `param_list`. |
 
-| Etapa | Onde (busque o comentário)                            | O que fazer                                                                                                                                                                                         |
-| ----- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | **`ADD NEW COMMAND: imports`**                        | `import` do seu `cmd_*` a partir do seu módulo (ex.: `commands.meu_modulo` ou `commands.param.*`). Se houver respostas em lista no fio, importe também `capture_*_from_ble` e `try_feed_*_session`. |
-| 2     | **`ADD NEW COMMAND: public re-exports`**              | Se o `main.py` precisar importar helpers BLE deste pacote, inclua-os no bloco de imports e em **`__all__`**.                                                                                        |
-| 3     | **`ADD NEW COMMAND: inline CLI handlers`**            | Opcional: `async def cmd_*` pequenos neste arquivo em vez de outro módulo.                                                                                                                          |
-| 4     | **`ADD NEW COMMAND: incoming BLE handlers`**          | Opcional: `def _incoming_*` síncronos para linhas dispositivo → host no formato `nome_do_comando(...)`.                                                                                             |
-| 5     | **`ADD NEW COMMAND: register CLI handlers`**          | `register_cli_command("nome", cmd_nome)` — o nome deve coincidir com o primeiro token digitado.                                                                                                     |
-| 6     | **`ADD NEW COMMAND: register incoming BLE handlers`** | `register_incoming_command("nome", handler)` para cada handler de entrada.                                                                                                                          |
-| 7     | **`ADD NEW COMMAND: load external plugin modules`**   | No final: `import my_robot_commands  # noqa: F401` para um arquivo separado que chama `register_*` na importação.                                                                                   |
+#### Plugin externo (fora de `src/commands/`)
+
+| Etapa | O que fazer |
+| ----- | ----------- |
+| 1     | Use **`@cli_command`** / **`@incoming_command`** (ou **`register_*`**) no seu módulo. |
+| 2     | No **final** de **`command_handlers.py`**: **`import my_robot_commands  # noqa: F401`** para executar o registro na importação. |
 
 #### `src/main.py` (somente para respostas BLE em lista/stream)
 
@@ -104,64 +106,53 @@ Os handlers da CLI são **assíncronos** e recebem:
 - **`inv: CommandInvocation`** — `name`, `raw_arguments` (texto dentro dos parênteses), `params` (tupla de argumentos em string) e `line` (linha inteira).
 - **`nus: NusPort`** — qualquer coisa com `await nus.send_message(text) -> bool`. Você não importa `main` nem a classe do cliente BLE para tipagem.
 
-Importe os tipos de `commands.command_handlers`:
+Importe tipos e decoradores de `commands.command_handlers`:
 
 ```python
-from commands.command_handlers import CommandInvocation, NusPort, register_cli_command
+from commands.command_handlers import CommandInvocation, NusPort, cli_command
 ```
 
 ### Passo a passo: comando na CLI
 
-1. **Crie um novo módulo** no `sys.path` (muitas vezes `src/` ou `src/commands/`), por exemplo `src/my_robot_commands.py`.
+**Embutido (árvore `src/commands/`):**
 
-2. **Implemente um handler assíncrono** cujo primeiro nome de token coincida com o que você vai digitar (a comparação usa minúsculas):
+1. Adicione **`src/commands/my_motion_handlers.py`** (o nome deve terminar em **`_handlers.py`**).
+2. Registre com decorador (nome padrão: `cmd_set_speed` → `set_speed`):
 
    ```python
    from __future__ import annotations
 
-   from commands.command_handlers import CommandInvocation, NusPort, register_cli_command
+   from commands.command_handlers import CommandInvocation, NusPort, cli_command
 
 
-   async def set_speed(inv: CommandInvocation, nus: NusPort) -> None:
+   @cli_command  # ou @cli_command("set_speed")
+   async def cmd_set_speed(inv: CommandInvocation, nus: NusPort) -> None:
        if len(inv.params) != 1:
            return
        speed = inv.params[0]
-       ok = await nus.send_message(f"set_speed({speed})")
-       if not ok:
-           return
-
-
-   register_cli_command("set_speed", set_speed)
+       await nus.send_message(f"set_speed({speed})")
    ```
 
-3. **Carregue o módulo** depois que o registro em `src/commands/command_handlers.py` estiver definido. No **final** desse arquivo (lista §7, comentário `ADD NEW COMMAND: load external plugin modules`), adicione:
+3. **Execute** `uv run src/main.py` e digite `set_speed(42)`.
 
-   ```python
-   import my_robot_commands  # noqa: F401
-   ```
-
-   Use o mesmo estilo de import do nome do arquivo (por exemplo `import my_robot_commands` para `my_robot_commands.py`). Colocar esse import por último evita problemas de importação circular.
-
-4. **Execute** `uv run src/main.py` e digite `set_speed(42)` no prompt.
+**Plugin externo:** coloque o mesmo handler em, por exemplo, `src/my_robot_commands.py` e adicione **`import my_robot_commands  # noqa: F401`** no final de **`command_handlers.py`**.
 
 Comandos registrados na CLI rodam **localmente** no app; use `nus.send_message(...)` quando o firmware deve receber uma string.
 
 ### Comandos BLE recebidos
 
-Se o dispositivo envia o mesmo formato `nome_do_comando(...)` e você quer tratamento no lado Python (logs, efeitos colaterais), registre um handler **síncrono** (lista §4 e §6 em `command_handlers.py`):
+Se o dispositivo envia o mesmo formato `nome_do_comando(...)` e você quer tratamento no lado Python (logs, efeitos colaterais), registre um handler **síncrono** com **`@incoming_command`** (ou **`register_incoming_command`**). Para **`_incoming_status`**, o nome registrado é **`status`** (o prefixo **`_incoming_`** é removido).
 
 ```python
-from commands.command_handlers import CommandInvocation, register_incoming_command
+from commands.command_handlers import CommandInvocation, incoming_command
 
 
-def on_status(inv: CommandInvocation) -> None:
+@incoming_command  # ou @incoming_command("status")
+def _incoming_status(inv: CommandInvocation) -> None:
     print("Status do dispositivo:", inv.params)
-
-
-register_incoming_command("status", on_status)
 ```
 
-Carregue seu módulo a partir do final de `commands/command_handlers.py` da mesma forma que para comandos da CLI.
+Para módulos fora de `src/commands/**`, carregue o módulo no final de `command_handlers.py` como nos comandos da CLI.
 
 ### Helpers de parsing reutilizáveis
 
@@ -169,14 +160,23 @@ Para outros formatos no fio (não a invocação principal da CLI), use `src/prot
 
 ### Comandos embutidos
 
-Os comandos embutidos da CLI usam a mesma API `register_cli_command` que extensões (`help`, `param_list`, `echo`, `ping` em `src/commands/command_handlers.py`). Ajuda via BLE e a coleta `help_res(...)` estão em `src/commands/help_handlers.py`; `param_list` fica em `src/commands/param/param_list_handlers.py`.
+Os comandos embutidos usam **`@cli_command`** (ou `register_cli_command`). Handlers ficam em arquivos `*_handlers.py` sob `src/commands/` (por exemplo `help_handlers.py`, `param/param_list_handlers.py`); comandos curtos como `echo` / `ping` ficam inline em `command_handlers.py`.
 
-#### Script de teste
-Teste rápido do cliente BLE Nordic UART:
+#### Scripts
+
+- Verificação rápida do registro (sem BLE):
+
+```bash
+$ uv run scripts/list_registered_commands.py
+```
+
+- Teste rápido do cliente BLE Nordic UART:
 
 ```bash
 $ uv run src/test_nus.py
 ```
+
+**Modelo mínimo** para comando só de envio ao BLE: copie `src/commands/param/param_set_handlers.py` (reenvia `inv.line`, sem parsing de resposta).
 
 ### Executar Jupyter Notebook
 

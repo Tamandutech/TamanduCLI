@@ -8,7 +8,8 @@ import asyncio
 from collections import deque
 from typing import TYPE_CHECKING, Optional
 
-from protocol_utils import split_top_level_commas, unquote_field
+from commands.command_handlers import cli_command
+from protocol_utils import parse_command_message
 
 if TYPE_CHECKING:
     from commands.command_handlers import NusPort
@@ -27,44 +28,23 @@ def _terminal():
     return main_module.Terminal
 
 
-def _param_get_res_inner(line: str) -> Optional[str]:
-    s = line.strip()
-    low = s.lower()
-    key = "param_get_res("
-    if key not in low:
-        return None
-    idx = low.find(key)
-    if idx < 0:
-        return None
-    i = idx + len(key)
-    depth = 1
-    j = i
-    while j < len(s) and depth:
-        if s[j] == "(":
-            depth += 1
-        elif s[j] == ")":
-            depth -= 1
-        j += 1
-    if depth:
-        return None
-    return s[i : j - 1]
-
-
 def parse_param_get_res(line: str) -> Optional[tuple[str, str]]:
     """
+    Expects the whole stripped line to be only ``param_get_res(...)`` (see ``parse_command_message``).
+
     Device → host, after param_get(Class.ref):
 
     - Two fields: param_get_res("Class.param","value")
     - Three fields (same shape as list rows): param_get_res(0,"Class.param","value") — index ignored.
     """
-    inner = _param_get_res_inner(line)
-    if inner is None:
+    inv = parse_command_message(line)
+    if inv is None or inv.name != "param_get_res":
         return None
-    args = split_top_level_commas(inner)
+    args = inv.params
     if len(args) == 2:
-        return unquote_field(args[0]), unquote_field(args[1])
+        return args[0], args[1]
     if len(args) == 3:
-        return unquote_field(args[1]), unquote_field(args[2])
+        return args[1], args[2]
     return None
 
 
@@ -120,6 +100,7 @@ def try_feed_param_get_session(message: str) -> bool:
     return fed
 
 
+@cli_command
 async def cmd_param_get(inv: "CommandInvocation", nus: "NusPort") -> None:
     """Send param_get(ref) over BLE; wait for param_get_res with matching ref and print value."""
     global _active_param_get_session

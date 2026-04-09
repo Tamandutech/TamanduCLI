@@ -1,7 +1,9 @@
 """
 Reusable parsing helpers for wire/CLI text (comma splitting, quoting, command lines).
 
-Import from here in custom command modules — no need to touch main.py parsing.
+Standard device/CLI line shape: ``command_name(param1, param2, ...)``. Parse it with
+:func:`parse_command_message` / :func:`parse_command_line` → :class:`CommandInvocation`
+(``name``, ``param_count``, ``params``, plus ``raw_arguments`` and ``line``).
 """
 
 from __future__ import annotations
@@ -98,12 +100,13 @@ def parse_command_invocation(line: str) -> tuple[str, str] | None:
 @dataclass(frozen=True)
 class CommandInvocation:
     """
-    Digested command line for handlers.
+    Digested ``command_name(param1, param2, ...)`` line for handlers.
 
-    - name: first token, lowercased (e.g. "help").
-    - raw_arguments: verbatim text inside the outer parentheses.
-    - params: top-level comma arguments after unquoting (all strings).
-    - line: full stripped line (safe to send to the device as-is).
+    - **name** — first token, lowercased (e.g. ``"help"``).
+    - **param_count** — ``len(params)``.
+    - **params** — each argument, split on top-level commas and unquoted.
+    - **raw_arguments** — verbatim text inside the outer parentheses.
+    - **line** — full stripped line (safe to forward to the device).
     """
 
     name: str
@@ -111,9 +114,27 @@ class CommandInvocation:
     params: tuple[str, ...]
     line: str
 
+    @property
+    def param_count(self) -> int:
+        return len(self.params)
+
+
+def parse_command_message(line: str) -> CommandInvocation | None:
+    """
+    Parse a wire/CLI message ``command_name(param1, param2, ...)``.
+
+    Returns :class:`CommandInvocation` with ``name``, ``param_count``, ``params``, or ``None``
+    if the line is not a single well-formed invocation (empty, extra text after the closing paren, etc.).
+    """
+    return _parse_command_line_impl(line)
+
 
 def parse_command_line(line: str) -> CommandInvocation | None:
-    """Parse a full line into a CommandInvocation, or None if the format is invalid."""
+    """Same as :func:`parse_command_message` (kept for existing call sites)."""
+    return _parse_command_line_impl(line)
+
+
+def _parse_command_line_impl(line: str) -> CommandInvocation | None:
     stripped = line.strip()
     if not stripped:
         return None

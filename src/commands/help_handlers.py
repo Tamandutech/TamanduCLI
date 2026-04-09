@@ -8,8 +8,9 @@ import asyncio
 from collections import deque
 from typing import TYPE_CHECKING, Optional
 
+from commands.command_handlers import cli_command
 from output_paths import OUTPUT_DIR, ensure_output_dir
-from protocol_utils import split_top_level_commas, unquote_field
+from protocol_utils import parse_command_message
 
 if TYPE_CHECKING:
     from commands.command_handlers import NusPort
@@ -29,31 +30,11 @@ def _terminal():
     return main_module.Terminal
 
 
-def _help_res_inner(line: str) -> Optional[str]:
-    s = line.strip()
-    low = s.lower()
-    key = "help_res("
-    if key not in low:
-        return None
-    idx = low.find(key)
-    if idx < 0:
-        return None
-    i = idx + len(key)
-    depth = 1
-    j = i
-    while j < len(s) and depth:
-        if s[j] == "(":
-            depth += 1
-        elif s[j] == ")":
-            depth -= 1
-        j += 1
-    if depth:
-        return None
-    return s[i : j - 1]
-
-
 def parse_help_res(line: str) -> Optional[tuple[int, str, str]]:
     """
+    Expects the whole line (after strip) to be ``help_res(...)`` only — same rules as
+    :func:`~protocol_utils.parse_command_message`.
+
     Wire shapes:
 
     - Header: help_res(0,"header",N) — N is the number of command rows (indices 1..N).
@@ -61,21 +42,20 @@ def parse_help_res(line: str) -> Optional[tuple[int, str, str]]:
     - Rows (4 fields): help_res(index, name, params, description) — params e.g. \"none\" or
       \"reference,value\"; stored value is \"params, description\" for display/file.
     """
-    inner = _help_res_inner(line)
-    if inner is None:
+    inv = parse_command_message(line)
+    if inv is None or inv.name != "help_res":
         return None
-    args = split_top_level_commas(inner)
+    args = inv.params
     if len(args) not in (3, 4):
         return None
     try:
         idx = int(args[0].strip())
     except ValueError:
         return None
-    name = unquote_field(args[1])
+    name = args[1]
     if len(args) == 3:
-        return idx, name, unquote_field(args[2])
-    params = unquote_field(args[2])
-    description = unquote_field(args[3])
+        return idx, name, args[2]
+    params, description = args[2], args[3]
     return idx, name, f"{params}, {description}"
 
 
@@ -177,6 +157,7 @@ def try_feed_help_session(message: str) -> bool:
     return fed
 
 
+@cli_command
 async def cmd_help(inv: "CommandInvocation", nus: "NusPort") -> None:
     """Send help(...) over BLE, wait/collect help_res rows, then persist and print."""
     global _active_help_session
