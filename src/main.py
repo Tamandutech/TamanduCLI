@@ -11,6 +11,16 @@ from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
 
+from commands.command_handlers import (
+    capture_help_res_from_ble,
+    capture_param_list_res_from_ble,
+    dispatch_cli_command,
+    handle_incoming_message,
+    is_command_invocation,
+    try_feed_help_session,
+    try_feed_param_list_session,
+)
+
 if platform.system() == "Windows":
     os.system("color")  # Enable ANSI color codes on Windows
 
@@ -37,7 +47,7 @@ TERM_COLOR = {
 }
 
 
-APP_TAG = f"{TERM_COLOR['BRIGHT_MAGENTA']}[LF_DevKit]{TERM_COLOR['RESET']}"
+APP_TAG = f"{TERM_COLOR['BRIGHT_MAGENTA']}[TT_CLI]{TERM_COLOR['RESET']}"
 
 
 class Terminal:
@@ -168,17 +178,31 @@ UART_RX_CHAR_UUID = NordicUARTService.NUS_RX_CHAR_UUID
 UART_TX_CHAR_UUID = NordicUARTService.NUS_TX_CHAR_UUID
 STREAM_UUID = "3a8328fc-3768-46d2-b371-b34864ce8025"
 
+# Only list BLE peripherals whose advertised name starts with this prefix (Tamandutech devices).
+DEVICE_NAME_PREFIX = "TT"
+
+
 async def main():
     """Main function implementing Nordic UART Service CLI."""
-    Terminal.log("🔍 Scanning for BLE devices with Nordic UART Service...", "CYAN")
+    Terminal.log(
+        f"🔍 Scanning for BLE devices (name prefix '{DEVICE_NAME_PREFIX}')...",
+        "CYAN",
+    )
 
     # Scan for devices
     devices = []
     while not devices:
         discovered_devices = await BleakScanner.discover(5.0)
-        devices = [d for d in discovered_devices if d.name]
+        devices = [
+            d
+            for d in discovered_devices
+            if d.name and d.name.startswith(DEVICE_NAME_PREFIX)
+        ]
         if not devices:
-            Terminal.log("❌ No devices found. Retrying in 3 seconds...", "YELLOW")
+            Terminal.log(
+                f"❌ No devices with name prefix '{DEVICE_NAME_PREFIX}' found. Retrying in 3 seconds...",
+                "YELLOW",
+            )
             await asyncio.sleep(3)
 
     # Display available devices
@@ -207,36 +231,69 @@ async def main():
             Terminal.log("❌ Failed to connect to device", "RED")
             return
 
+        def ble_dispatch_line(message: str) -> None:
+            capture_help_res_from_ble(message)
+            capture_param_list_res_from_ble(message)
+            if try_feed_help_session(message):
+                return
+            if try_feed_param_list_session(message):
+                return
+            handle_incoming_message(message)
+
+        nus.set_message_handler(ble_dispatch_line)
+
         Terminal.log("🚀 Nordic UART Service CLI ready!", "GREEN")
         Terminal.log("💡 Commands:", "YELLOW")
-        Terminal.log("  • Type any message to send to the device", "WHITE")
+        Terminal.log(
+            "  • Use command_name(param1, param2, ...) — e.g. help(), param_list(), ping(), echo(hello)",
+            "WHITE",
+        )
+        Terminal.log(
+            "  • help() / param_list() save list responses under output/ (help_response.txt, param_list.txt); "
+            "see commands/help_handlers.py and commands/param/param_list_handlers.py",
+            "WHITE",
+        )
+        Terminal.log(
+            "  • Unknown commands or non-matching lines prompt before sending as raw text",
+            "WHITE",
+        )
         Terminal.log("  • Type 'quit' or 'exit' to close the app", "WHITE")
-        Terminal.log("  • Messages from the device will appear automatically", "WHITE")
         Terminal.log("─" * 50, "DARK_GRAY")
 
         # Main CLI loop
         try:
             while nus.is_connected:
                 try:
-                    # Get user input with timeout to allow for received messages
-                    message = await asyncio.wait_for(
-                        asyncio.get_event_loop().run_in_executor(
-                            None, lambda: Terminal.input("📤 Send: ", "CYAN")
-                        ),
-                        timeout=0.1
+                    # Block until Enter; do not use a short wait_for timeout — that cancels the
+                    # executor future and discards typed input before send_message runs.
+                    loop = asyncio.get_event_loop()
+                    message = await loop.run_in_executor(
+                        None, lambda: Terminal.input("📤 Send: ", "CYAN")
                     )
-                    
-                    if message.lower() in ['quit', 'exit', 'close']:
+
+                    if message.strip().lower() in ["quit", "exit", "close"]:
                         Terminal.log("👋 Closing Nordic UART Service CLI...", "YELLOW")
                         break
-                    
+
                     if message.strip():
-                        await nus.send_message(message)
-                        
-                except asyncio.TimeoutError:
-                    # Timeout is expected - allows for continuous message reception
-                    await asyncio.sleep(0.1)
-                    continue
+                        if await dispatch_cli_command(message, nus):
+                            continue
+                        else:
+                            if not is_command_invocation(message):
+                                Terminal.log(
+                                    "⚠ Expected format: command_name(param1, param2, ...)",
+                                    "YELLOW",
+                                )
+                            confirm = await loop.run_in_executor(
+                                None,
+                                lambda: Terminal.input(
+                                    "Unknown or unregistered command. Send this line as raw text to the device? [y/N]: ",
+                                    "YELLOW",
+                                ),
+                            )
+                            if confirm.strip().lower() in ("y", "yes"):
+                                await nus.send_message(message)
+
                 except KeyboardInterrupt:
                     Terminal.log("\n👋 Interrupted by user", "YELLOW")
                     break
