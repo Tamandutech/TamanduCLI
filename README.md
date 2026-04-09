@@ -1,10 +1,8 @@
 # TamanduCLI
 
-Interface de linha de comando (CLI) e outras ferramentas para desenvolver, testar, depurar e visualizar dados de robôs seguidores de linha.
+Interface de linha de comando (CLI) e ferramentas de apoio para desenvolver, testar, depurar e visualizar dados de **robôs** e outros sistemas embarcados conectados via Bluetooth.
 
-> Para um controlador com interface gráfica (GUI), use o [Dashboard](https://tt-linefollower.web.app).
->
-> Repositório no GitHub: [Tamandutech/LineFollower_CCenter_Code](https://github.com/Tamandutech/LineFollower_CCenter_Code).
+> Você pode usar esta CLI junto com qualquer aplicativo complementar (dashboard web, UI desktop, etc.); documente o fluxo no seu próprio projeto.
 
 ## Primeiros passos
 
@@ -31,8 +29,8 @@ $ uv tool install ruff
 
 ### Executar scripts Python
 
-#### CLI do Nordic UART Service
-O aplicativo principal oferece uma interface de linha de comando para se comunicar com dispositivos IoT usando o Nordic UART Service:
+#### Console BLE para robôs (Nordic UART Service)
+O aplicativo principal é um console de texto para falar com um robô (ou outro dispositivo) que expõe o **Nordic UART Service** padrão em Bluetooth Low Energy:
 
 ```bash
 $ uv run src/main.py
@@ -41,8 +39,8 @@ $ uv run src/main.py
 **Recursos:**
 - 🔍 Varredura automática de dispositivos BLE
 - 📱 Interface de seleção de dispositivo
-- 📤 Envio de mensagens para dispositivos IoT conectados
-- 📨 Recebimento e exibição de mensagens dos dispositivos
+- 📤 Envio de comandos e texto bruto para o robô conectado
+- 📨 Recebimento e exibição de mensagens do robô
 - 🔌 Gerenciamento automático de conexão
 - 🎨 Saída colorida no terminal
 
@@ -149,7 +147,7 @@ Para outros formatos no fio (não a invocação principal da CLI), use `src/prot
 Os handlers existentes são registrados em `src/commands/command_handlers.py` (`help`, `param_list`, `echo`, `ping`). Ajuda via BLE e a coleta `help_res(...)` estão em `src/commands/help_handlers.py`; `param_list` fica em `src/commands/param/param_list_handlers.py`.
 
 #### Script de teste
-Teste a implementação do Nordic UART Service:
+Teste rápido do cliente BLE Nordic UART:
 
 ```bash
 $ uv run src/test_nus.py

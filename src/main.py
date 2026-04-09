@@ -47,7 +47,7 @@ TERM_COLOR = {
 }
 
 
-APP_TAG = f"{TERM_COLOR['BRIGHT_MAGENTA']}[TT_CLI]{TERM_COLOR['RESET']}"
+APP_TAG = f"{TERM_COLOR['BRIGHT_MAGENTA']}[TamanduCLI]{TERM_COLOR['RESET']}"
 
 
 class Terminal:
@@ -63,8 +63,8 @@ class Terminal:
 # Section: Nordic UART Service (NUS) Implementation
 class NordicUARTService:
     """
-    Nordic UART Service implementation using NimBLE stack.
-    Provides bidirectional communication with IoT devices.
+    Nordic UART Service (BLE serial) client.
+    Use this for bidirectional text with robots and other embedded devices that expose NUS.
     """
     
     # Nordic UART Service UUIDs
@@ -178,12 +178,12 @@ UART_RX_CHAR_UUID = NordicUARTService.NUS_RX_CHAR_UUID
 UART_TX_CHAR_UUID = NordicUARTService.NUS_TX_CHAR_UUID
 STREAM_UUID = "3a8328fc-3768-46d2-b371-b34864ce8025"
 
-# Only list BLE peripherals whose advertised name starts with this prefix (Tamandutech devices).
+# BLE scan filter: only peripherals whose advertised name starts with this prefix (set to "" for any named device).
 DEVICE_NAME_PREFIX = "TT"
 
 
 async def main():
-    """Main function implementing Nordic UART Service CLI."""
+    """Interactive BLE serial console for robots (Nordic UART Service)."""
     Terminal.log(
         f"🔍 Scanning for BLE devices (name prefix '{DEVICE_NAME_PREFIX}')...",
         "CYAN",
@@ -242,7 +242,7 @@ async def main():
 
         nus.set_message_handler(ble_dispatch_line)
 
-        Terminal.log("🚀 Nordic UART Service CLI ready!", "GREEN")
+        Terminal.log("🚀 Robot BLE console ready!", "GREEN")
         Terminal.log("💡 Commands:", "YELLOW")
         Terminal.log(
             "  • Use command_name(param1, param2, ...) — e.g. help(), param_list(), ping(), echo(hello)",
@@ -272,7 +272,7 @@ async def main():
                     )
 
                     if message.strip().lower() in ["quit", "exit", "close"]:
-                        Terminal.log("👋 Closing Nordic UART Service CLI...", "YELLOW")
+                        Terminal.log("👋 Closing robot BLE console...", "YELLOW")
                         break
 
                     if message.strip():
@@ -306,7 +306,7 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        Terminal.log("🚀 Starting Nordic UART Service CLI...", "BRIGHT_GREEN")
+        Terminal.log("🚀 Starting TamanduCLI (robot BLE console)...", "BRIGHT_GREEN")
         asyncio.run(main())
     except asyncio.CancelledError:
         # Task is cancelled on disconnect, so we ignore this error
@@ -316,4 +316,4 @@ if __name__ == "__main__":
     except Exception as e:
         Terminal.log(f"❌ Unexpected error: {str(e)}", "RED")
     finally:
-        Terminal.log("🔚 Nordic UART Service CLI closed", "DARK_GRAY")
+        Terminal.log("🔚 TamanduCLI closed", "DARK_GRAY")

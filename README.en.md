@@ -1,10 +1,8 @@
 # TamanduCLI
 
-Command Line Interface (CLI) and other tools for developing, testing, debugging, and data visualization of line follower robots.
+Command-line interface (CLI) and supporting tools for developing, testing, debugging, and visualizing data from **robots** and other embedded systems you connect over Bluetooth.
 
-> For a Graphic User Interface (GUI) Controller, use the [Dashboard](https://tt-linefollower.web.app).
->
-> GitHub Repository: [Tamandutech/LineFollower_CCenter_Code](https://github.com/Tamandutech/LineFollower_CCenter_Code).
+> You can pair this CLI with any companion app you use to operate the same hardware (web dashboard, desktop UI, etc.); wire that up in your own project docs.
 
 ## Getting Started
 
@@ -31,8 +29,8 @@ $ uv tool install ruff
 
 ### Run Python Scripts
 
-#### Nordic UART Service CLI
-The main application provides a CLI interface for communicating with IoT devices using the Nordic UART Service:
+#### Robot BLE console (Nordic UART Service)
+The main app is a text console for talking to a robot (or any device) that exposes the standard **Nordic UART Service** over Bluetooth Low Energy:
 
 ```bash
 $ uv run src/main.py
@@ -41,8 +39,8 @@ $ uv run src/main.py
 **Features:**
 - 🔍 Automatic BLE device scanning
 - 📱 Device selection interface
-- 📤 Send messages to connected IoT devices
-- 📨 Receive and display messages from devices
+- 📤 Send commands and raw text to the connected robot
+- 📨 Receive and display messages from the robot
 - 🔌 Automatic connection management
 - 🎨 Colorized terminal output
 
@@ -148,8 +146,8 @@ For other wire formats (not the main CLI invocation), use `src/protocol_utils.py
 
 Existing handlers are registered in `src/commands/command_handlers.py` (`help`, `param_list`, `echo`, `ping`). Help over BLE and `help_res(...)` collection is in `src/commands/help_handlers.py`; `param_list` lives in `src/commands/param/param_list_handlers.py`.
 
-#### Test Script
-Test the Nordic UART Service implementation:
+#### Test script
+Smoke-test the BLE Nordic UART client:
 
 ```bash
 $ uv run src/test_nus.py

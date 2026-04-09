@@ -1,7 +1,7 @@
 [project]
-name = "linefollowerdevkit"
+name = "tamanducli"
 version = "0.1.0"
-description = "Add your description here"
+description = "CLI and helpers for developing, testing, and debugging robots over Bluetooth LE (Nordic UART Service)."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

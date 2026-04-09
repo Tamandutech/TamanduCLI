@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for Nordic UART Service implementation.
-This script demonstrates how to use the NordicUARTService class.
+Smoke test for the BLE Nordic UART Service client used by TamanduCLI.
 """
 
 import asyncio
@@ -17,8 +16,8 @@ from main import BleakScanner, NordicUARTService, Terminal
 
 
 async def test_nus_connection():
-    """Test the Nordic UART Service connection and communication."""
-    Terminal.log("🧪 Testing Nordic UART Service...", "BRIGHT_CYAN")
+    """Exercise BLE connect + NUS read/write against a peripheral."""
+    Terminal.log("🧪 Testing robot BLE (NUS) connection...", "BRIGHT_CYAN")
     
     # Scan for devices
     Terminal.log("🔍 Scanning for devices...", "CYAN")
@@ -45,7 +44,7 @@ async def test_nus_connection():
         Terminal.log("✅ Connection test passed", "GREEN")
         
         # Test message sending
-        test_message = "Hello from Nordic UART Service test!"
+        test_message = "Hello from TamanduCLI NUS test!"
         if await nus.send_message(test_message):
             Terminal.log("✅ Message sending test passed", "GREEN")
         else:
@@ -56,7 +55,7 @@ async def test_nus_connection():
         Terminal.log("⏳ Waiting for responses...", "YELLOW")
         await asyncio.sleep(2)
         
-        Terminal.log("✅ Nordic UART Service test completed successfully", "GREEN")
+        Terminal.log("✅ BLE NUS test completed successfully", "GREEN")
         return True
 
 

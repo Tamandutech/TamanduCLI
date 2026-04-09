@@ -58,7 +58,7 @@ __all__ = [
 
 @runtime_checkable
 class NusPort(Protocol):
-    """BLE UART bridge: anything with send_message is enough for command handlers."""
+    """BLE serial bridge to the robot (or device): anything with ``send_message`` works for handlers."""
 
     async def send_message(self, message: str) -> bool: ...
 
