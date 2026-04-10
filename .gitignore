@@ -167,3 +167,4 @@ output*.pdf
 
 # Generated CLI/BLE text exports
 output/
+input/

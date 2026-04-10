@@ -67,7 +67,7 @@ A análise e o despacho ficam em `src/commands/command_handlers.py` e `src/proto
 | 3     | Se o `main.py` precisar de **`capture_*_from_ble`** / **`try_feed_*_session`**, adicione imports e entradas em **`__all__`** em **`command_handlers.py`** (mesmo bloco dos helpers de help/param). |
 | 4     | Conecte **`ble_dispatch_line`** no **`main.py`**: primeiro `capture_*`, depois `try_feed_*` com `return` antecipado, por fim `handle_incoming_message`—mesma ordem de `help` / `param_list`. |
 
-#### Plugin externo (fora de `src/commands/`)
+#### Módulo fora de `src/commands/` (carregamento manual)
 
 | Etapa | O que fazer |
 | ----- | ----------- |
@@ -135,13 +135,15 @@ from commands.command_handlers import CommandInvocation, NusPort, cli_command
 
 3. **Execute** `uv run src/main.py` e digite `set_speed(42)`.
 
-**Plugin externo:** coloque o mesmo handler em, por exemplo, `src/my_robot_commands.py` e adicione **`import my_robot_commands  # noqa: F401`** no final de **`command_handlers.py`**.
+**Módulo fora da árvore `src/commands/`:** coloque o mesmo handler em, por exemplo, `src/my_robot_commands.py` e adicione **`import my_robot_commands  # noqa: F401`** no final de **`command_handlers.py`**.
 
 Comandos registrados na CLI rodam **localmente** no app; use `nus.send_message(...)` quando o firmware deve receber uma string.
 
-### Comandos BLE recebidos
+### Plugin externo: comandos recebidos do dispositivo (BLE)
 
-Se o dispositivo envia o mesmo formato `nome_do_comando(...)` e você quer tratamento no lado Python (logs, efeitos colaterais), registre um handler **síncrono** com **`@incoming_command`** (ou **`register_incoming_command`**). Para **`_incoming_status`**, o nome registrado é **`status`** (o prefixo **`_incoming_`** é removido).
+**Plugin externo** (neste projeto) são linhas no formato `nome_do_comando(...)`, **enviadas pelo dispositivo externo (robô) e recebidas pelo computador que roda o terminal** via BLE — em oposição aos comandos **digitados nesse terminal**, cobertos na seção anterior com **`@cli_command`**.
+
+Se o firmware envia esse formato e você quer tratamento no lado Python (logs, efeitos colaterais), registre um handler **síncrono** com **`@incoming_command`** (ou **`register_incoming_command`**). Para **`_incoming_status`**, o nome registrado é **`status`** (o prefixo **`_incoming_`** é removido).
 
 ```python
 from commands.command_handlers import CommandInvocation, incoming_command

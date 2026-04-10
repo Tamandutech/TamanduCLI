@@ -67,7 +67,7 @@ Parsing and dispatch live in `src/commands/command_handlers.py` and `src/protoco
 | 3    | If `main.py` must call your **`capture_*_from_ble`** / **`try_feed_*_session`**, add imports and **`__all__`** entries in **`command_handlers.py`** (same block as the existing help/param helpers).            |
 | 4    | Wire **`ble_dispatch_line`** in **`main.py`**: `capture_*` first, then `try_feed_*` with early `return`, then `handle_incoming_message`—same order as `help` / `param_list`.                                    |
 
-#### External plugin (outside `src/commands/`)
+#### Module outside `src/commands/` (manual import)
 
 | Step | What to do                                                                                                                        |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -135,13 +135,15 @@ from commands.command_handlers import CommandInvocation, NusPort, cli_command
 
 3. **Run** `uv run src/main.py` and type `set_speed(42)`.
 
-**External plugin:** put the same handler in e.g. `src/my_robot_commands.py`, then add **`import my_robot_commands  # noqa: F401`** at the bottom of **`command_handlers.py`** so the module loads once.
+**Module outside the `src/commands/` tree:** put the same handler in e.g. `src/my_robot_commands.py`, then add **`import my_robot_commands  # noqa: F401`** at the bottom of **`command_handlers.py`** so the module loads once.
 
 Registered CLI commands run **locally** in the app; use `nus.send_message(...)` when the firmware should receive a string.
 
-### Incoming BLE commands
+### External plugin: commands received from the device (BLE)
 
-If the device sends the same `command_name(...)` shape and you want Python-side handling (logging, side effects), register a **synchronous** handler with **`@incoming_command`** (or **`register_incoming_command`**). For **`_incoming_status`**, the registered name is **`status`** (the **`_incoming_`** prefix is stripped).
+**External plugin** (in this project) means lines in the `command_name(...)` form **sent by the external device (robot) and received by the computer running the terminal** over BLE — as opposed to commands **typed in that terminal**, covered in the previous section with **`@cli_command`**.
+
+If the firmware emits that shape and you want Python-side handling (logging, side effects), register a **synchronous** handler with **`@incoming_command`** (or **`register_incoming_command`**). For **`_incoming_status`**, the registered name is **`status`** (the **`_incoming_`** prefix is stripped).
 
 ```python
 from commands.command_handlers import CommandInvocation, incoming_command
