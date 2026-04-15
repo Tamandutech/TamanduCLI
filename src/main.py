@@ -15,12 +15,14 @@ from bleak.backends.scanner import AdvertisementData
 # commands.command_handlers (after exporting them there), then call them inside ble_dispatch_line below.
 from commands.command_handlers import (
     capture_help_res_from_ble,
+    capture_map_get_res_from_ble,
     capture_param_get_res_from_ble,
     capture_param_list_res_from_ble,
     dispatch_cli_command,
     handle_incoming_message,
     is_command_invocation,
     try_feed_help_session,
+    try_feed_map_get_session,
     try_feed_param_get_session,
     try_feed_param_list_session,
 )
@@ -239,9 +241,12 @@ async def main():
             # ADD NEW COMMAND (BLE list/stream): buffer and session-dispatch device lines here
             # (mirror help / param_list: capture_* first, then try_feed_* before handle_incoming_message).
             capture_help_res_from_ble(message)
+            capture_map_get_res_from_ble(message)
             capture_param_get_res_from_ble(message)
             capture_param_list_res_from_ble(message)
             if try_feed_help_session(message):
+                return
+            if try_feed_map_get_session(message):
                 return
             if try_feed_param_get_session(message):
                 return
@@ -259,7 +264,7 @@ async def main():
         )
         Terminal.log(
             "  • help() / param_list() save list responses under output/ (help_response.txt, param_list.txt); "
-            "see commands/help_handlers.py and commands/param/param_list_handlers.py",
+            "see commands/help_handlers.py and commands/param_list_handlers.py",
             "WHITE",
         )
         Terminal.log(
@@ -293,15 +298,19 @@ async def main():
                                     "⚠ Expected format: command_name(param1, param2, ...)",
                                     "YELLOW",
                                 )
-                            confirm = await loop.run_in_executor(
-                                None,
-                                lambda: Terminal.input(
-                                    "Unknown or unregistered command. Send this line as raw text to the device? [y/N]: ",
+                                Terminal.log(
+                                    "⚠ Sending raw text: " + message,
                                     "YELLOW",
-                                ),
-                            )
-                            if confirm.strip().lower() in ("y", "yes"):
-                                await nus.send_message(message)
+                                )
+                            # confirm = await loop.run_in_executor(
+                            #     None,
+                            #     lambda: Terminal.input(
+                            #         "Unknown or unregistered command. Send this line as raw text to the device? [y/N]: ",
+                            #         "YELLOW",
+                            #     ),
+                            # )
+                            # if confirm.strip().lower() in ("y", "yes"):
+                            await nus.send_message(message)
 
                 except KeyboardInterrupt:
                     Terminal.log("\n👋 Interrupted by user", "YELLOW")

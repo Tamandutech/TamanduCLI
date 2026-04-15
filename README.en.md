@@ -62,7 +62,7 @@ Parsing and dispatch live in `src/commands/command_handlers.py` and `src/protoco
 
 | Step | What to do                                                                                                                                                                                                      |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1    | Add a module whose filename ends with **`_handlers.py`** (e.g. `src/commands/motion_handlers.py` or `src/commands/param/foo_handlers.py`). It is imported automatically when `commands.command_handlers` loads. |
+| 1    | Add a module whose filename ends with **`_handlers.py`** (e.g. `src/commands/motion_handlers.py` or `src/commands/param_list_handlers.py`). It is imported automatically when `commands.command_handlers` loads. |
 | 2    | Decorate your async handler with **`@cli_command`** (name inferred from `cmd_foo` → `foo`) or **`@cli_command("explicit_name")`**. You can still call **`register_cli_command`** manually if you prefer.        |
 | 3    | If `main.py` must call your **`capture_*_from_ble`** / **`try_feed_*_session`**, add imports and **`__all__`** entries in **`command_handlers.py`** (same block as the existing help/param helpers).            |
 | 4    | Wire **`ble_dispatch_line`** in **`main.py`**: `capture_*` first, then `try_feed_*` with early `return`, then `handle_incoming_message`—same order as `help` / `param_list`.                                    |
@@ -162,7 +162,7 @@ For other wire formats (not the main CLI invocation), use `src/protocol_utils.py
 
 ### Built-in commands
 
-Built-in CLI commands use **`@cli_command`** (or `register_cli_command`). Handlers live in `*_handlers.py` files under `src/commands/` (for example `help_handlers.py`, `param/param_list_handlers.py`); small shared commands such as `echo` / `ping` are defined inline in `command_handlers.py`.
+Built-in CLI commands use **`@cli_command`** (or `register_cli_command`). Handlers live in `*_handlers.py` files under `src/commands/` (for example `help_handlers.py`, `param_list_handlers.py`); small shared commands such as `echo` / `ping` are defined inline in `command_handlers.py`.
 
 #### Scripts
 
@@ -178,7 +178,7 @@ $ uv run scripts/list_registered_commands.py
 $ uv run src/test_nus.py
 ```
 
-Minimal **template** for a forward-only BLE command: copy `src/commands/param/param_set_handlers.py` (send `inv.line`, no response parsing).
+Minimal **template** for a forward-only BLE command: copy `src/commands/param_set_handlers.py` (send `inv.line`, no response parsing).
 
 ### Run Jupyter Notebook
 

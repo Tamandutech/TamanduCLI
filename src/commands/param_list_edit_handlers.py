@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from commands.command_handlers import cli_command
-from commands.param.param_list_handlers import PARAM_LIST_RESPONSE_PATH, parse_param_list_res
+from commands.param_list_handlers import PARAM_LIST_RESPONSE_PATH, parse_param_list_res
 from output_paths import INPUT_DIR, OUTPUT_DIR, ensure_input_dir
 
 if TYPE_CHECKING:

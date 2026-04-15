@@ -62,7 +62,7 @@ A análise e o despacho ficam em `src/commands/command_handlers.py` e `src/proto
 
 | Etapa | O que fazer |
 | ----- | ----------- |
-| 1     | Crie um módulo cujo nome termine em **`_handlers.py`** (ex.: `src/commands/motion_handlers.py` ou `src/commands/param/foo_handlers.py`). Ele é importado automaticamente ao carregar `commands.command_handlers`. |
+| 1     | Crie um módulo cujo nome termine em **`_handlers.py`** (ex.: `src/commands/motion_handlers.py` ou `src/commands/param_list_handlers.py`). Ele é importado automaticamente ao carregar `commands.command_handlers`. |
 | 2     | Decore o handler assíncrono com **`@cli_command`** (nome inferido de `cmd_foo` → `foo`) ou **`@cli_command("nome_explicito")`**. Ainda pode usar **`register_cli_command`** manualmente. |
 | 3     | Se o `main.py` precisar de **`capture_*_from_ble`** / **`try_feed_*_session`**, adicione imports e entradas em **`__all__`** em **`command_handlers.py`** (mesmo bloco dos helpers de help/param). |
 | 4     | Conecte **`ble_dispatch_line`** no **`main.py`**: primeiro `capture_*`, depois `try_feed_*` com `return` antecipado, por fim `handle_incoming_message`—mesma ordem de `help` / `param_list`. |
@@ -162,7 +162,7 @@ Para outros formatos no fio (não a invocação principal da CLI), use `src/prot
 
 ### Comandos embutidos
 
-Os comandos embutidos usam **`@cli_command`** (ou `register_cli_command`). Handlers ficam em arquivos `*_handlers.py` sob `src/commands/` (por exemplo `help_handlers.py`, `param/param_list_handlers.py`); comandos curtos como `echo` / `ping` ficam inline em `command_handlers.py`.
+Os comandos embutidos usam **`@cli_command`** (ou `register_cli_command`). Handlers ficam em arquivos `*_handlers.py` sob `src/commands/` (por exemplo `help_handlers.py`, `param_list_handlers.py`); comandos curtos como `echo` / `ping` ficam inline em `command_handlers.py`.
 
 #### Scripts
 
@@ -178,7 +178,7 @@ $ uv run scripts/list_registered_commands.py
 $ uv run src/test_nus.py
 ```
 
-**Modelo mínimo** para comando só de envio ao BLE: copie `src/commands/param/param_set_handlers.py` (reenvia `inv.line`, sem parsing de resposta).
+**Modelo mínimo** para comando só de envio ao BLE: copie `src/commands/param_set_handlers.py` (reenvia `inv.line`, sem parsing de resposta).
 
 ### Executar Jupyter Notebook
 

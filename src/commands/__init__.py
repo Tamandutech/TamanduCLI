@@ -1,6 +1,6 @@
 """
-Command registry, BLE list collectors, and param subpackage.
+Command registry and BLE list collectors.
 
 Public entry points live in ``commands.command_handlers``; param-specific handlers
-under ``commands.param``.
+live alongside other modules as ``commands.param_*_handlers``.
 """
