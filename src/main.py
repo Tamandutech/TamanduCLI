@@ -16,14 +16,12 @@ from bleak.backends.scanner import AdvertisementData
 from commands.command_handlers import (
     capture_help_res_from_ble,
     capture_map_get_res_from_ble,
-    capture_param_get_res_from_ble,
     capture_param_list_res_from_ble,
     dispatch_cli_command,
     handle_incoming_message,
     is_command_invocation,
     try_feed_help_session,
     try_feed_map_get_session,
-    try_feed_param_get_session,
     try_feed_param_list_session,
 )
 
@@ -93,7 +91,7 @@ class NordicUARTService:
     def _handle_rx_data(self, characteristic: BleakGATTCharacteristic, data: bytearray):
         """Handle incoming data from the TX characteristic (notifications)."""
         try:
-            message = data.decode('utf-8')
+            message = data.decode("utf-8").replace("\x00", "")
             Terminal.log(f"📨 Received: {message}", "GREEN")
             if self.message_handler:
                 self.message_handler(message)
@@ -242,13 +240,10 @@ async def main():
             # (mirror help / param_list: capture_* first, then try_feed_* before handle_incoming_message).
             capture_help_res_from_ble(message)
             capture_map_get_res_from_ble(message)
-            capture_param_get_res_from_ble(message)
             capture_param_list_res_from_ble(message)
             if try_feed_help_session(message):
                 return
             if try_feed_map_get_session(message):
-                return
-            if try_feed_param_get_session(message):
                 return
             if try_feed_param_list_session(message):
                 return

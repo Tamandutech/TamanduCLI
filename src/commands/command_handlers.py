@@ -38,7 +38,6 @@ __all__ = [
     "NusPort",
     "capture_help_res_from_ble",
     "capture_map_get_res_from_ble",
-    "capture_param_get_res_from_ble",
     "capture_param_list_res_from_ble",
     "cli_command",
     "digest_invocation_parameters",
@@ -55,7 +54,6 @@ __all__ = [
     "split_top_level_commas",
     "try_feed_help_session",
     "try_feed_map_get_session",
-    "try_feed_param_get_session",
     "try_feed_param_list_session",
     "unquote_field",
 ]
@@ -176,10 +174,6 @@ _load_command_handler_modules()
 from commands.help_handlers import (  # noqa: E402
     capture_help_res_from_ble,
     try_feed_help_session,
-)
-from commands.param_get_handlers import (  # noqa: E402
-    capture_param_get_res_from_ble,
-    try_feed_param_get_session,
 )
 from commands.map_edit_handlers import (  # noqa: E402
     capture_map_get_res_from_ble,
