@@ -196,7 +196,7 @@ async def main():
     # Scan for devices
     devices = []
     while not devices:
-        discovered_devices = await BleakScanner.discover(5.0)
+        discovered_devices = await BleakScanner.discover(3.0)
         devices = [
             d
             for d in discovered_devices
@@ -204,10 +204,10 @@ async def main():
         ]
         if not devices:
             Terminal.log(
-                f"❌ No devices with name prefix '{DEVICE_NAME_PREFIX}' found. Retrying in 3 seconds...",
+                f"❌ No devices with name prefix '{DEVICE_NAME_PREFIX}' found. Retrying in 1 second...",
                 "YELLOW",
             )
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
 
     # Display available devices
     Terminal.log(f"📱 Found {len(devices)} device(s):", "GREEN")
