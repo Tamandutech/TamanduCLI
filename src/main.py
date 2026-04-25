@@ -7,9 +7,12 @@ from prompt_toolkit import print_formatted_text
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.shortcuts import PromptSession, confirm, radiolist_dialog
+from prompt_toolkit.shortcuts import PromptSession, confirm
+from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 
 from api.ble_nus import NordicUARTService, scan_devices
+from api.cli_prompt_bindings import build_cli_input_key_bindings
+from api.cli_prompt_lexer import CLI_PROMPT_STYLE, WireCliLexer
 from api.command_handlers import (
     CLI_COMMAND_HANDLERS,
     CliHandlerContext,
@@ -76,21 +79,35 @@ async def main() -> None:
 
     Terminal.log(f"📱 Encontrado(s) {len(devices)} dispositivo(s).", "GREEN")
 
-    pick_app = radiolist_dialog(
-        title="Dispositivo Bluetooth",
-        text=f"Selecione um dispositivo (prefixo do nome {DEVICE_NAME_PREFIX!r}):",
-        values=[(d, f"{d.name} ({d.address})") for d in devices],
-        default=devices[0],
-        ok_text="OK",
-        cancel_text="Cancelar",
-    )
-    selected_device = await pick_app.run_async()
+    if len(devices) == 1:
+        selected_device = devices[0]
+        label = selected_device.name or "sem nome"
+        Terminal.log(
+            f"✓ Apenas um dispositivo encontrado — usando {label} ({selected_device.address}).",
+            "GREEN",
+        )
+    else:
+        try:
+            selected_device = await ChoiceInput(
+                message=f"Selecione um dispositivo (prefixo do nome {DEVICE_NAME_PREFIX!r}):",
+                options=[(d, f"{d.name} ({d.address})") for d in devices],
+                default=devices[0],
+            ).prompt_async()
+        except (KeyboardInterrupt, EOFError):
+            selected_device = None
     if selected_device is None:
         Terminal.log("👋 Nenhum dispositivo selecionado — saindo.", "YELLOW")
         return
 
     completer = WordCompleter(sorted(CLI_COMMAND_HANDLERS.keys()), ignore_case=True)
-    session = PromptSession(completer=completer)
+    registered_lower = frozenset(k.lower() for k in CLI_COMMAND_HANDLERS)
+    session = PromptSession(
+        completer=completer,
+        lexer=WireCliLexer(registered_lower),
+        style=CLI_PROMPT_STYLE,
+        include_default_pygments_style=False,
+        key_bindings=build_cli_input_key_bindings(),
+    )
 
     async def prompt_line(message: str) -> str:
         return await session.prompt_async(message)
@@ -125,9 +142,7 @@ async def main() -> None:
     Terminal.log(
         "💡 Protocolo wire: name(s,r); name(h,r,size); name(b,r,idx,args…);", "YELLOW"
     )
-    Terminal.log(
-        "  • Atalho: nomes de comandos registrados viram name(s,r);", "WHITE"
-    )
+    Terminal.log("  • Atalho: nomes de comandos registrados viram name(s,r);", "WHITE")
     Terminal.log("  • quit / exit / close — desconectar", "WHITE")
     Terminal.log("─" * 50, "DARK_GRAY")
 
