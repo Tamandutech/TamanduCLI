@@ -7,60 +7,51 @@ import asyncio
 import os
 import sys
 
-# Add the src directory to the path so we can import main
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from bleak.backends.device import BLEDevice
+from api.ble_nus import NordicUARTService, scan_devices
+from main import Terminal
 
-from main import BleakScanner, NordicUARTService, Terminal
 
-
-async def test_nus_connection():
-    """Exercise BLE connect + NUS read/write against a peripheral."""
+async def test_nus_connection() -> bool:
     Terminal.log("🧪 Testing robot BLE (NUS) connection...", "BRIGHT_CYAN")
-    
-    # Scan for devices
+
     Terminal.log("🔍 Scanning for devices...", "CYAN")
-    devices = await BleakScanner.discover(5.0)
-    devices = [d for d in devices if d.name]
-    
+    devices = await scan_devices(timeout=5.0, name_prefix="")
+
     if not devices:
         Terminal.log("❌ No devices found for testing", "RED")
         return False
-    
+
     Terminal.log(f"📱 Found {len(devices)} device(s) for testing", "GREEN")
-    
-    # Use the first device for testing
     test_device = devices[0]
     Terminal.log(f"🎯 Testing with device: {test_device.name}", "CYAN")
-    
-    # Test connection and communication
-    async with NordicUARTService() as nus:
-        # Test connection
+
+    nus = NordicUARTService(log=lambda m, c: Terminal.log(m, c))
+    try:
         if not await nus.connect(test_device):
             Terminal.log("❌ Connection test failed", "RED")
             return False
-        
+
         Terminal.log("✅ Connection test passed", "GREEN")
-        
-        # Test message sending
-        test_message = "Hello from TamanduCLI NUS test!"
+
+        test_message = "ping(s,r);"
         if await nus.send_message(test_message):
             Terminal.log("✅ Message sending test passed", "GREEN")
         else:
             Terminal.log("❌ Message sending test failed", "RED")
             return False
-        
-        # Wait a bit for any responses
+
         Terminal.log("⏳ Waiting for responses...", "YELLOW")
         await asyncio.sleep(2)
-        
+
         Terminal.log("✅ BLE NUS test completed successfully", "GREEN")
         return True
+    finally:
+        await nus.disconnect()
 
 
-async def main():
-    """Main test function."""
+async def main() -> None:
     try:
         success = await test_nus_connection()
         if success:
@@ -69,7 +60,7 @@ async def main():
             Terminal.log("❌ Some tests failed", "RED")
             sys.exit(1)
     except Exception as e:
-        Terminal.log(f"❌ Test error: {str(e)}", "RED")
+        Terminal.log(f"❌ Test error: {e!s}", "RED")
         sys.exit(1)
 
 

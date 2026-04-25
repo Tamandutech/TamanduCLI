@@ -46,75 +46,99 @@ $ uv run src/main.py
 
 **Usage:**
 1. Run the script and select a device from the list
-2. Type commands in the form `command_name(arg1, arg2, ...)` (see [Adding a new command](#adding-a-new-command) below). Lines that are not registered CLI commands can still be sent as raw text after confirmation.
+2. Type commands using the **wire protocol** (`name(s,r,...);` — see [Wire message protocol](#wire-message-protocol)) or use **shorthand** for registered CLI commands (`help`, `help()`, etc.). Unrecognized lines can still be sent as raw text after confirmation.
 3. Messages from the device will appear automatically
 4. Type `quit`, `exit`, or `close` to disconnect
 
 ## Adding a new command
 
-Parsing and dispatch live in `src/commands/command_handlers.py` and `src/protocol_utils.py`. You register handlers that receive a **digested** invocation and optional BLE access.
+Registration and dispatch live in **`src/api/command_handlers.py`**. Text protocol helpers (parse/format, `;`-separated messages) are in **`src/api/protocol_utils.py`**. Handlers under **`src/commands/**`** **consume** that API only.
 
-**Built-in commands** under `src/commands/**` use **`@cli_command`** and are **auto-imported** from any file named `*_handlers.py` (see `command_handlers._load_command_handler_modules`). You only need to edit **`src/commands/command_handlers.py`** to re-export BLE helpers for **`src/main.py`**, and you edit **`src/main.py`** only if the device streams a **custom response protocol** (like `help_res` / `param_list_res`) that must be buffered and fed into an active session.
+**CLI command plugins** — **your** `*_handlers.py` modules under **`src/commands/`** — use **`@cli_command`** and are **auto-loaded** on import (see `_load_command_handler_modules` in `api/command_handlers`). The repo ships examples there; you add or replace them like any other plugin tree. **`main.py`** already calls **`dispatch_ble_notification`** from the `api` package for BLE; for buffer/session flows, register **`@register_ble_capture`** / **`@register_ble_try_feed`** in your plugin module — **without** editing `src/api/command_handlers.py` for each new feature.
 
-### Checklist: built-in vs `main.py`
+### Checklist: `src/commands/` plugins vs manual import vs `main.py`
 
-#### New built-in handler (`src/commands/**/<name>_handlers.py`)
+#### New plugin module (`src/commands/**/<name>_handlers.py`)
 
-| Step | What to do                                                                                                                                                                                                      |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1    | Add a module whose filename ends with **`_handlers.py`** (e.g. `src/commands/motion_handlers.py` or `src/commands/param_list_handlers.py`). It is imported automatically when `commands.command_handlers` loads. |
-| 2    | Decorate your async handler with **`@cli_command`** (name inferred from `cmd_foo` → `foo`) or **`@cli_command("explicit_name")`**. You can still call **`register_cli_command`** manually if you prefer.        |
-| 3    | If `main.py` must call your **`capture_*_from_ble`** / **`try_feed_*_session`**, add imports and **`__all__`** entries in **`command_handlers.py`** (same block as the existing help/param helpers).            |
-| 4    | Wire **`ble_dispatch_line`** in **`main.py`**: `capture_*` first, then `try_feed_*` with early `return`, then `handle_incoming_message`—same order as `help` / `param_list`.                                    |
+| Step | What to do                                                                                                                                                                                                                                                                                           |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Add a module whose filename ends with **`_handlers.py`** (e.g. `src/commands/motion_handlers.py` or `src/commands/param_list_edit_handlers.py`). It is imported automatically when `api.command_handlers` loads.                                                                                     |
+| 2    | Decorate your async handler with **`@cli_command`** (name inferred from `cmd_foo` → `foo`) or **`@cli_command("explicit_name")`**. You can still call **`register_cli_command`** manually if you prefer.                                                                                             |
+| 3    | For list/stream BLE buffering: decorate with **`@register_ble_capture`** (``def f(message: str) -> None``) and/or **`@register_ble_try_feed`** (``def f(message: str) -> bool``). Order follows loaded ``*_handlers.py`` modules; you do **not** edit **`src/api/command_handlers.py`** per feature. |
+| 4    | **`main.py`** only calls **`dispatch_ble_notification(message, router)`** from **`api`**—it runs all capture hooks, then try-feed hooks until one returns ``True``, then **`@incoming_command`** handlers.                                                                                           |
 
 #### Module outside `src/commands/` (manual import)
 
-| Step | What to do                                                                                                                        |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------- |
-| 1    | Use **`@cli_command`** / **`@incoming_command`** (or **`register_*`**) in your module.                                            |
-| 2    | At the **bottom** of **`command_handlers.py`**: **`import my_robot_commands  # noqa: F401`** so registration runs at import time. |
+| Step | What to do                                                                                                                                |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Use **`@cli_command`** / **`@incoming_command`** (or **`register_*`**) in your module.                                                    |
+| 2    | At the **bottom** of **`src/api/command_handlers.py`**: **`import my_robot_commands  # noqa: F401`** so registration runs at import time. |
 
-#### `src/main.py` (only for BLE list/stream responses)
+#### `src/main.py` (BLE list/stream responses)
 
-| Step | Where                                                    | What to do                                                                                                                                                                      |
-| ---- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1    | **Imports** from `commands.command_handlers`             | Add your `capture_*_from_ble` and `try_feed_*_session` symbols (they must be exported from `command_handlers.py` first).                                                        |
-| 2    | **`ble_dispatch_line`** (inside `main()`, after connect) | Call each `capture_*_from_ble(message)` first, then each `if try_feed_*_session(message): return`, then `handle_incoming_message(message)`—same order as `help` / `param_list`. |
+| Step | Where                           | What to do                                                                                                              |
+| ---- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| 1    | Not needed                      | New capture/feed hooks register in ``commands`` modules via **`@register_ble_capture`** / **`@register_ble_try_feed`**. |
+| 2    | **`dispatch_ble_notification`** | **`main.py`** already forwards each BLE line to **`api.command_handlers.dispatch_ble_notification`**.                   |
 
-### Command format
+### Wire message protocol
 
-Every line the app treats as a command must look like a function call:
+Traffic with the device uses **text commands** (not JSON). A **message** may contain **several commands** separated by **`;`** (separators outside parentheses and quoted strings do not split inside them).
+
+Each command looks like:
 
 ```text
-command_name(parameter1, parameter2, ...)
+name(mode, req_or_resp, ...arguments)
 ```
 
-Arguments are split on **top-level commas** (commas inside quoted strings are ignored). Each segment is **unquoted** if it was wrapped in double quotes. Examples:
+| Position after `name(`        | Meaning       | Values                                                                           |
+| ----------------------------- | ------------- | -------------------------------------------------------------------------------- |
+| 1st parameter (`mode`)        | Command shape | **`s`** = *single*, **`h`** = list **header**, **`b`** = list **body** (one row) |
+| 2nd parameter (`req_or_resp`) | Message role  | **`r`** = request, **`s`** = response                                            |
 
-| You type              | `inv.name`  | `inv.params`         |
-| --------------------- | ----------- | -------------------- |
-| `ping()`              | `ping`      | `()` (empty)         |
-| `echo(hello, world)`  | `echo`      | `("hello", "world")` |
-| `set_speed("10", 20)` | `set_speed` | `("10", "20")`       |
+Examples:
 
-The full stripped line is always available as `inv.line` if you need to forward it verbatim to the device (for example after `help()`).
+```text
+help(s,r);
+param_list(h,s,5);
+param_list(b,s,1,"param_get","ref","read a parameter");
+map_get(b,s,0,1,2,3,4,5);
+```
 
-### What your handler receives
+- **Single** (`s`): after `r` or `s` come the command arguments, if any.
+- **List** (`h` / `b`): **`h`** usually carries the list size after `r`/`s`; **`b`** carries the **row index** then the arguments for that row.
+- Firmware often caps message size (e.g. **256 bytes** on NUS); long lists are split across multiple messages.
 
-CLI handlers are **async** and get:
+In the **CLI**, **registered** commands accept **shorthand** (`help`, `help()`) which expands to `help(s,r);` before sending. Otherwise use full wire text or confirm raw send.
 
-- **`inv: CommandInvocation`** — `name`, `raw_arguments` (text inside the parentheses), `params` (tuple of string arguments), and `line` (full line).
-- **`nus: NusPort`** — anything with `await nus.send_message(text) -> bool`. You do not import `main` or the BLE client class for typing.
+### What your CLI handler receives
 
-Import types and decorators from `commands.command_handlers`:
+**`@cli_command`** handlers are **async** and receive:
+
+- **`inv: WireCommand`** — `name`, `kind` (`"single"` \| `"list_header"` \| `"list_body"`), `is_response`, `index` (for list bodies), `arguments` (tuple of strings as on the wire).
+- **`ctx: CliHandlerContext`** — `nus`, `incoming` (parsed command buffer), `prompt_line` / `log`, and **`await ctx.send_wire(text)`** (adds a trailing `;` when appropriate).
+
+With `src` on `PYTHONPATH` (as in `uv run src/main.py`):
 
 ```python
-from commands.command_handlers import CommandInvocation, NusPort, cli_command
+from api.command_handlers import CliHandlerContext, WireCommand, cli_command
 ```
+
+### When you need `register_ble_capture`, `register_ble_try_feed`, or a session class
+
+You **do not** need these for every script — only when the BLE flow requires them.
+
+| Piece                                  | Role                                                                                                                                   | When you **need** it                                                                                                                                                                                                 |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`@register_ble_capture`**            | `def f(message: str) -> None` runs **before** parsing on **every** notification; typically **buffers** lines.                          | Responses can arrive **before** the user starts the collecting command, and you want to **replay** them when the session opens (e.g. `help`, `param_list`).                                                          |
+| **`@register_ble_try_feed`**           | `def f(message: str) -> bool`; returning **`True`** **stops** further handling for that notification (no generic `@incoming_command`). | An **active session** consumes a multi-line stream until complete or timeout.                                                                                                                                        |
+| **A `*CollectionSession`-style class** | Holds state + `asyncio.Event` + file output.                                                                                           | Only for **multi-notification** “collect until done / partial” flows. A simple request/response command can use **`ctx.incoming.wait_for(...)`** inside the handler **without** capture/try_feed or a session class. |
+
+For “send → wait for one reply → show”, **`@cli_command`** plus **`ctx`** / **`incoming`** is usually enough.
 
 ### Step-by-step: CLI command
 
-**Built-in (`src/commands/` tree):**
+**Plugin under `src/commands/`:**
 
 1. Add **`src/commands/my_motion_handlers.py`** (must end with **`_handlers.py`**).
 2. Register with a decorator (name defaults from `cmd_set_speed` → `set_speed`):
@@ -122,47 +146,44 @@ from commands.command_handlers import CommandInvocation, NusPort, cli_command
    ```python
    from __future__ import annotations
 
-   from commands.command_handlers import CommandInvocation, NusPort, cli_command
+   from api.command_handlers import CliHandlerContext, WireCommand, cli_command
+   from api.protocol_utils import format_message
 
 
    @cli_command  # or @cli_command("set_speed")
-   async def cmd_set_speed(inv: CommandInvocation, nus: NusPort) -> None:
-       if len(inv.params) != 1:
-           return
-       speed = inv.params[0]
-       await nus.send_message(f"set_speed({speed})")
+   async def cmd_set_speed(inv: WireCommand, ctx: CliHandlerContext) -> None:
+       arg = inv.arguments[0] if inv.arguments else "42"
+       await ctx.send_wire(format_message([WireCommand.single_request("set_speed", (arg,))]))
    ```
 
-3. **Run** `uv run src/main.py` and type `set_speed(42)`.
+3. **Run** `uv run src/main.py` and type `set_speed(42)` or the wire form `set_speed(s,r,42);`.
 
-**Module outside the `src/commands/` tree:** put the same handler in e.g. `src/my_robot_commands.py`, then add **`import my_robot_commands  # noqa: F401`** at the bottom of **`command_handlers.py`** so the module loads once.
-
-Registered CLI commands run **locally** in the app; use `nus.send_message(...)` when the firmware should receive a string.
+**Module outside the `src/commands/` tree:** put the handler in e.g. `src/my_robot_commands.py`, then add **`import my_robot_commands  # noqa: F401`** at the bottom of **`src/api/command_handlers.py`**.
 
 ### External plugin: commands received from the device (BLE)
 
-**External plugin** (in this project) means lines in the `command_name(...)` form **sent by the external device (robot) and received by the computer running the terminal** over BLE — as opposed to commands **typed in that terminal**, covered in the previous section with **`@cli_command`**.
+These are messages in the **same wire protocol** (parsed to **`WireCommand`**), **sent by the robot** and received on the PC over BLE — unlike what the user **types** in the terminal (`@cli_command`).
 
-If the firmware emits that shape and you want Python-side handling (logging, side effects), register a **synchronous** handler with **`@incoming_command`** (or **`register_incoming_command`**). For **`_incoming_status`**, the registered name is **`status`** (the **`_incoming_`** prefix is stripped).
+Register a **synchronous** handler with **`@incoming_command`** (or **`register_incoming_command`**). The registry name comes from **`_incoming_foo` → `foo`** or **`@incoming_command("name")`**. The handler receives a **`WireCommand`**.
 
 ```python
-from commands.command_handlers import CommandInvocation, incoming_command
+from api.command_handlers import WireCommand, incoming_command
 
 
 @incoming_command  # or @incoming_command("status")
-def _incoming_status(inv: CommandInvocation) -> None:
-    print("Device status:", inv.params)
+def _incoming_status(cmd: WireCommand) -> None:
+    print("Device command:", cmd.name, cmd.arguments)
 ```
 
-For modules outside `src/commands/**`, load the module from the bottom of `command_handlers.py` as for CLI commands.
+For modules outside `src/commands/**`, import the module at the bottom of **`src/api/command_handlers.py`** as for CLI commands.
 
 ### Reusable parsing helpers
 
-For other wire formats (not the main CLI invocation), use `src/protocol_utils.py`, for example `split_top_level_commas` and `unquote_field`. You can also import these via `commands.command_handlers` (see `__all__` there).
+Use **`src/api/protocol_utils.py`** for wire parsing — e.g. `parse_message`, `format_wire_command`, `split_top_level_commas`, `unquote_field`. Import from **`api.protocol_utils`** or from **`api.command_handlers`** (`__all__`).
 
-### Built-in commands
+### CLI command plugins (`src/commands/`)
 
-Built-in CLI commands use **`@cli_command`** (or `register_cli_command`). Handlers live in `*_handlers.py` files under `src/commands/` (for example `help_handlers.py`, `param_list_handlers.py`); small shared commands such as `echo` / `ping` are defined inline in `command_handlers.py`.
+Plugin handlers use **`@cli_command`** (or `register_cli_command`). Put them in `*_handlers.py` under `src/commands/` (e.g. `help_handlers.py`, `param_list_edit_handlers.py`); minimal **`echo` / `ping`** samples that ship with the **core** API live in **`src/api/command_handlers.py`**.
 
 #### Scripts
 
@@ -178,7 +199,7 @@ $ uv run scripts/list_registered_commands.py
 $ uv run src/test_nus.py
 ```
 
-Minimal **template** for a forward-only BLE command: copy `src/commands/param_set_handlers.py` (send `inv.line`, no response parsing).
+Minimal **template** for a forward-only BLE command: see `cmd_echo` / `cmd_ping` in **`src/api/command_handlers.py`**, or a small `*_handlers.py` that only calls **`await ctx.send_wire(...)`**.
 
 ### Run Jupyter Notebook
 
