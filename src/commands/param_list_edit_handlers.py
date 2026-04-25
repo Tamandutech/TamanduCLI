@@ -26,6 +26,8 @@ PARAM_LIST_RESPONSE_PATH = OUTPUT_DIR / "param_list.txt"
 PARAM_LIST_INPUT_PATH = INPUT_DIR / "param_list.txt"
 DEFAULT_PARAM_LIST_WIRE = format_message([WireCommand.single_request("param_list", ())])
 
+_AFFIRMATIVE = frozenset({"y", "yes", "s", "sim"})
+
 _param_list_ble_recent: deque[str] = deque(maxlen=128)
 _active_param_list_session: Optional["ParamListCollectionSession"] = None
 
@@ -152,14 +154,14 @@ class ParamListCollectionSession:
         if body.strip():
             ensure_output_dir()
             PARAM_LIST_RESPONSE_PATH.write_text(body, encoding="utf-8")
-            self._log(f"💾 Parameter list saved to {PARAM_LIST_RESPONSE_PATH}", "GREEN")
+            self._log(f"💾 Lista de parâmetros salva em {PARAM_LIST_RESPONSE_PATH}", "GREEN")
         else:
-            self._log("⚠ No parameter list collected; file not written.", "YELLOW")
+            self._log("⚠ Nenhuma lista de parâmetros coletada; arquivo não gravado.", "YELLOW")
 
-        status = "complete" if completed else "partial (timeout)"
-        self._log(f"📋 Device parameters ({status}):", "YELLOW")
+        status = "completo" if completed else "parcial (tempo esgotado)"
+        self._log(f"📋 Parâmetros do dispositivo ({status}):", "YELLOW")
         if self._expected is not None:
-            self._log(f"  Expecting {self._expected} entr(y/ies)", "CYAN")
+            self._log(f"  Esperando {self._expected} entrada(s)", "CYAN")
         for idx in sorted(self._rows.keys()):
             if idx == 0:
                 continue
@@ -204,8 +206,8 @@ async def collect_param_list_to_file(ctx: CliHandlerContext, send_wire: str | No
         completed = await session.wait_until_done(PARAM_LIST_WAIT_SECONDS)
         if not completed:
             ctx.log(
-                f"⏱ param_list collection timed out after {PARAM_LIST_WAIT_SECONDS:g}s; "
-                "showing partial results.",
+                f"⏱ Coleta de param_list excedeu {PARAM_LIST_WAIT_SECONDS:g}s; "
+                "mostrando resultados parciais.",
                 "YELLOW",
             )
         session.write_file_and_log(completed)
@@ -233,7 +235,7 @@ async def cmd_param_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
     await collect_param_list_to_file(ctx)
 
     if not PARAM_LIST_RESPONSE_PATH.is_file() or not PARAM_LIST_RESPONSE_PATH.read_text(encoding="utf-8").strip():
-        ctx.log("⚠ output/param_list.txt missing or empty after param_list.", "YELLOW")
+        ctx.log("⚠ output/param_list.txt ausente ou vazio após param_list.", "YELLOW")
         return
 
     ensure_output_dir()
@@ -241,11 +243,14 @@ async def cmd_param_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
     shutil.copy2(PARAM_LIST_RESPONSE_PATH, PARAM_LIST_INPUT_PATH)
     rel_out = PARAM_LIST_RESPONSE_PATH.relative_to(OUTPUT_DIR.parent)
     rel_in = PARAM_LIST_INPUT_PATH.relative_to(OUTPUT_DIR.parent)
-    ctx.log(f"💾 Wrote {rel_out} and copied to {rel_in} — edit the file under input/, then save.", "GREEN")
+    ctx.log(
+        f"💾 Gravado {rel_out} e copiado para {rel_in} — edite o arquivo em input/ e salve.",
+        "GREEN",
+    )
 
-    done = (await ctx.prompt_line("Finished editing? Type y to continue: ")).strip().lower()
-    if done not in ("y", "yes"):
-        ctx.log("Aborted (no diff or apply).", "YELLOW")
+    done = (await ctx.prompt_line("Terminou a edição? Digite y ou s para continuar: ")).strip().lower()
+    if done not in _AFFIRMATIVE:
+        ctx.log("Cancelado (sem diff ou aplicar).", "YELLOW")
         return
 
     original_text = PARAM_LIST_RESPONSE_PATH.read_text(encoding="utf-8")
@@ -260,62 +265,68 @@ async def cmd_param_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
             tofile="input/param_list.txt",
         )
     )
-    ctx.log("--- Diff (output/param_list.txt → input/param_list.txt) ---", "YELLOW")
+    ctx.log("--- Diferenças (output/param_list.txt → input/param_list.txt) ---", "YELLOW")
     if not diff_lines:
-        ctx.log("(no differences)", "WHITE")
-        ctx.log("Nothing to apply.", "YELLOW")
+        ctx.log("(sem diferenças)", "WHITE")
+        ctx.log("Nada a aplicar.", "YELLOW")
         return
     for line in diff_lines:
         ctx.log(line.rstrip("\n"), "WHITE")
 
     ok = (
         await ctx.prompt_line(
-            "Apply these changes? Type y to send param_set for each param_list(b,s,…) row from input/param_list.txt: "
+            "Aplicar essas mudanças? Digite y ou s para enviar param_set para cada linha param_list(b,s,…) de input/param_list.txt: "
         )
     ).strip().lower()
-    if ok not in ("y", "yes"):
-        ctx.log("Aborted — no param_set commands sent.", "YELLOW")
+    if ok not in _AFFIRMATIVE:
+        ctx.log("Cancelado — nenhum comando param_set enviado.", "YELLOW")
         return
 
     expected, edited_rows, edit_errors = parse_param_list_document(PARAM_LIST_INPUT_PATH.read_text(encoding="utf-8"))
     if edit_errors:
-        ctx.log("⚠ Edited file has invalid lines (each line: param_list(h,s,N); or param_list(b,s,i,...);):", "RED")
+        ctx.log(
+            "⚠ O arquivo editado tem linhas inválidas (cada linha: param_list(h,s,N); ou param_list(b,s,i,...);):",
+            "RED",
+        )
         for e in edit_errors:
             ctx.log(e, "RED")
-        ctx.log("Fix the file and run param_edit again.", "YELLOW")
+        ctx.log("Corrija o arquivo e execute param_edit novamente.", "YELLOW")
         return
     if expected is None:
         ctx.log(
-            "⚠ Edited file must include a param_list list header (param_list(h,s,<count>);) "
-            "or complete param_list(b,s,…) body lines for indices 1..N.",
+            "⚠ O arquivo editado deve incluir o cabeçalho da lista param_list (param_list(h,s,<count>);) "
+            "ou linhas completas param_list(b,s,…) para os índices 1..N.",
             "RED",
         )
         return
     missing = [i for i in range(expected) if i not in edited_rows]
     if missing:
-        ctx.log(f"⚠ Missing parameter index(es) for Parameters: {expected}: {missing!r}", "RED")
+        ctx.log(f"⚠ Falta(m) índice(s) de parâmetro (esperados {expected}): {missing!r}", "RED")
         return
     extra = [i for i in edited_rows if i < 0 or i >= expected]
     if extra:
-        ctx.log(f"⚠ Index out of range 0..{expected - 1}: {extra!r}", "RED")
+        ctx.log(f"⚠ Índice fora do intervalo 0..{expected - 1}: {extra!r}", "RED")
         return
 
     to_apply = [(i, edited_rows[i][0], edited_rows[i][1]) for i in range(expected)]
     if not to_apply:
-        ctx.log("No parameter rows to send.", "YELLOW")
+        ctx.log("Nenhuma linha de parâmetro para enviar.", "YELLOW")
         return
 
     for idx, name, value in to_apply:
         line = _param_set_wire_message(name, value)
         ctx.log(f"📤 {line}", "CYAN")
         if not await ctx.send_wire(line):
-            ctx.log("⚠ send failed; stopping.", "RED")
+            ctx.log("⚠ Falha ao enviar; interrompendo.", "RED")
             return
 
-    ctx.log(f"✅ Sent {len(to_apply)} param_set command(s). Requesting param_list to verify…", "GREEN")
+    ctx.log(
+        f"✅ Enviado(s) {len(to_apply)} comando(s) param_set. Solicitando param_list para verificar…",
+        "GREEN",
+    )
 
     await collect_param_list_to_file(ctx)
     if PARAM_LIST_RESPONSE_PATH.is_file():
-        ctx.log("✅ Refreshed output/param_list.txt from device.", "GREEN")
+        ctx.log("✅ output/param_list.txt atualizado a partir do dispositivo.", "GREEN")
     else:
-        ctx.log("⚠ param_list after apply did not produce output/param_list.txt.", "YELLOW")
+        ctx.log("⚠ param_list após aplicar não produziu output/param_list.txt.", "YELLOW")

@@ -24,6 +24,8 @@ MAP_GET_IDLE_SECONDS = 3.0
 MAP_OUTPUT_PATH = OUTPUT_DIR / "map.txt"
 MAP_INPUT_PATH = INPUT_DIR / "map.txt"
 
+_AFFIRMATIVE = frozenset({"y", "yes", "s", "sim"})
+
 _map_get_wire_recent: deque[str] = deque(maxlen=8)
 _active_map_get_session: Optional["MapGetSession"] = None
 
@@ -188,7 +190,7 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
         raw = session.data
         if raw is None:
             ctx.log(
-                f"⏱ map_get: no ``map_get(b,s,…)`` rows within {MAP_GET_IDLE_SECONDS:g}s idle after the request.",
+                f"⏱ map_get: nenhuma linha ``map_get(b,s,…)`` em {MAP_GET_IDLE_SECONDS:g}s de inatividade após o pedido.",
                 "YELLOW",
             )
             return
@@ -198,11 +200,14 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
         shutil.copy2(MAP_OUTPUT_PATH, MAP_INPUT_PATH)
         rel_out = MAP_OUTPUT_PATH.relative_to(OUTPUT_DIR.parent)
         rel_in = MAP_INPUT_PATH.relative_to(OUTPUT_DIR.parent)
-        ctx.log(f"💾 Saved {rel_out} and copied to {rel_in} — edit the file in input/, then save.", "GREEN")
+        ctx.log(
+            f"💾 Salvo {rel_out} e copiado para {rel_in} — edite o arquivo em input/ e salve.",
+            "GREEN",
+        )
 
-        done = (await ctx.prompt_line("Finished editing? Type y to continue: ")).strip().lower()
-        if done not in ("y", "yes"):
-            ctx.log("Aborted (no diff or apply).", "YELLOW")
+        done = (await ctx.prompt_line("Terminou a edição? Digite y ou s para continuar: ")).strip().lower()
+        if done not in _AFFIRMATIVE:
+            ctx.log("Cancelado (sem diff ou aplicar).", "YELLOW")
             return
 
         original_text = MAP_OUTPUT_PATH.read_text(encoding="utf-8")
@@ -217,34 +222,37 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
                 tofile="input/map.txt",
             )
         )
-        ctx.log("--- Diff (output/map.txt → input/map.txt) ---", "YELLOW")
+        ctx.log("--- Diferenças (output/map.txt → input/map.txt) ---", "YELLOW")
         if not diff_lines:
-            ctx.log("(no differences)", "WHITE")
-            ctx.log("Nothing to apply.", "YELLOW")
+            ctx.log("(sem diferenças)", "WHITE")
+            ctx.log("Nada a aplicar.", "YELLOW")
             return
         for line in diff_lines:
             ctx.log(line.rstrip("\n"), "WHITE")
 
         ok = (
             await ctx.prompt_line(
-                "Were these changes intended? Type y to send map_clear, map_add for each line of input/map.txt, then map_SaveRuntime: "
+                "Essas mudanças são intencionais? Digite y ou s para enviar map_clear, map_add para cada linha de input/map.txt e depois map_SaveRuntime: "
             )
         ).strip().lower()
-        if ok not in ("y", "yes"):
-            ctx.log("Aborted — nothing sent.", "YELLOW")
+        if ok not in _AFFIRMATIVE:
+            ctx.log("Cancelado — nada enviado.", "YELLOW")
             return
 
         _, edit_errors = _parse_map_rows(MAP_INPUT_PATH)
         if edit_errors:
-            ctx.log("⚠ Edited file has lines that are not valid index,time,encMedia,trackStatus,offset:", "RED")
+            ctx.log(
+                "⚠ O arquivo editado tem linhas que não são index,time,encMedia,trackStatus,offset válidos:",
+                "RED",
+            )
             for e in edit_errors:
                 ctx.log(e, "RED")
-            ctx.log("Fix the file and run map_edit again.", "YELLOW")
+            ctx.log("Corrija o arquivo e execute map_edit novamente.", "YELLOW")
             return
 
         ctx.log("📤 map_clear", "CYAN")
         if not await ctx.send_wire(format_message([WireCommand.single_request("map_clear", ())])):
-            ctx.log("⚠ map_clear send failed; stopping.", "RED")
+            ctx.log("⚠ Falha ao enviar map_clear; interrompendo.", "RED")
             return
         await asyncio.sleep(1.0)
 
@@ -258,16 +266,16 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
             msg = format_message([WireCommand.single_request("map_add", tuple(parts))])
             ctx.log(f"📤 {msg}", "CYAN")
             if not await ctx.send_wire(msg):
-                ctx.log("⚠ send failed; stopping.", "RED")
+                ctx.log("⚠ Falha ao enviar; interrompendo.", "RED")
                 return
             sent_lines += 1
 
-        ctx.log(f"✅ Sent map_clear and {sent_lines} map_add line(s).", "GREEN")
+        ctx.log(f"✅ Enviados map_clear e {sent_lines} linha(s) map_add.", "GREEN")
         await asyncio.sleep(1.0)
         if not await ctx.send_wire(format_message([WireCommand.single_request("map_SaveRuntime", ())])):
-            ctx.log("⚠ map_SaveRuntime send failed.", "RED")
+            ctx.log("⚠ Falha ao enviar map_SaveRuntime.", "RED")
             return
-        ctx.log("📤 Sent map_SaveRuntime.", "GREEN")
+        ctx.log("📤 map_SaveRuntime enviado.", "GREEN")
     finally:
         session.close()
         if _active_map_get_session is session:

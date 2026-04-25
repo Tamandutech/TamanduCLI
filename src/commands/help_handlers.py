@@ -108,18 +108,18 @@ class HelpCollectionSession:
         if body:
             ensure_output_dir()
             HELP_RESPONSE_PATH.write_text(body + "\n", encoding="utf-8")
-            log(f"💾 Help list saved to {HELP_RESPONSE_PATH}", "GREEN")
+            log(f"💾 Lista de help salva em {HELP_RESPONSE_PATH}", "GREEN")
         else:
-            log("⚠ No help wire lines collected; file not written.", "YELLOW")
+            log("⚠ Nenhuma linha wire de help coletada; arquivo não gravado.", "YELLOW")
 
-        status = "complete" if completed else "partial (timeout)"
-        log(f"📋 Device help ({status}):", "YELLOW")
+        status = "completo" if completed else "parcial (tempo esgotado)"
+        log(f"📋 Help do dispositivo ({status}):", "YELLOW")
         for idx in sorted(self._rows.keys()):
             name, value = self._rows[idx]
             if idx == 0:
                 n = self._expected_command_count
                 log(
-                    f"  [0] header — expecting {n if n is not None else value} command row(s)",
+                    f"  [0] cabeçalho — esperando {n if n is not None else value} linha(s) de comando",
                     "CYAN",
                 )
             else:
@@ -160,7 +160,7 @@ async def cmd_help(inv: WireCommand, ctx: CliHandlerContext) -> None:
         completed = await session.wait_until_done(HELP_WAIT_SECONDS)
         if not completed:
             ctx.log(
-                f"⏱ Help collection timed out after {HELP_WAIT_SECONDS:g}s; showing partial results.",
+                f"⏱ Coleta de help excedeu {HELP_WAIT_SECONDS:g}s; mostrando resultados parciais.",
                 "YELLOW",
             )
         session.write_file_and_log(completed, ctx.log)

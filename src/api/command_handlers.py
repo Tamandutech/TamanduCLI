@@ -286,7 +286,7 @@ def handle_incoming_message(message: str, router: IncomingRouter | None = None) 
 
 @cli_command
 async def cmd_echo(inv: WireCommand, ctx: CliHandlerContext) -> None:
-    ctx.log(f"🔊 Echo: {inv.arguments}", "CYAN")
+    ctx.log(f"🔊 Eco: {inv.arguments}", "CYAN")
 
 
 @cli_command
@@ -297,7 +297,7 @@ async def cmd_ping(inv: WireCommand, ctx: CliHandlerContext) -> None:
 
 @incoming_command
 def _incoming_echo(inv: WireCommand) -> None:
-    _log_builtin(f"🔊 Echo: {inv.arguments}", "CYAN")
+    _log_builtin(f"🔊 Eco: {inv.arguments}", "CYAN")
 
 
 @incoming_command

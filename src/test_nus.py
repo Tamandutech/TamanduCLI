@@ -14,38 +14,38 @@ from main import Terminal
 
 
 async def test_nus_connection() -> bool:
-    Terminal.log("🧪 Testing robot BLE (NUS) connection...", "BRIGHT_CYAN")
+    Terminal.log("🧪 Testando conexão BLE (NUS) do robô...", "BRIGHT_CYAN")
 
-    Terminal.log("🔍 Scanning for devices...", "CYAN")
+    Terminal.log("🔍 Buscando dispositivos...", "CYAN")
     devices = await scan_devices(timeout=5.0, name_prefix="")
 
     if not devices:
-        Terminal.log("❌ No devices found for testing", "RED")
+        Terminal.log("❌ Nenhum dispositivo encontrado para o teste", "RED")
         return False
 
-    Terminal.log(f"📱 Found {len(devices)} device(s) for testing", "GREEN")
+    Terminal.log(f"📱 Encontrado(s) {len(devices)} dispositivo(s) para o teste", "GREEN")
     test_device = devices[0]
-    Terminal.log(f"🎯 Testing with device: {test_device.name}", "CYAN")
+    Terminal.log(f"🎯 Testando com o dispositivo: {test_device.name}", "CYAN")
 
     nus = NordicUARTService(log=lambda m, c: Terminal.log(m, c))
     try:
         if not await nus.connect(test_device):
-            Terminal.log("❌ Connection test failed", "RED")
+            Terminal.log("❌ Teste de conexão falhou", "RED")
             return False
 
-        Terminal.log("✅ Connection test passed", "GREEN")
+        Terminal.log("✅ Teste de conexão passou", "GREEN")
 
         test_message = "ping(s,r);"
         if await nus.send_message(test_message):
-            Terminal.log("✅ Message sending test passed", "GREEN")
+            Terminal.log("✅ Teste de envio de mensagem passou", "GREEN")
         else:
-            Terminal.log("❌ Message sending test failed", "RED")
+            Terminal.log("❌ Teste de envio de mensagem falhou", "RED")
             return False
 
-        Terminal.log("⏳ Waiting for responses...", "YELLOW")
+        Terminal.log("⏳ Aguardando respostas...", "YELLOW")
         await asyncio.sleep(2)
 
-        Terminal.log("✅ BLE NUS test completed successfully", "GREEN")
+        Terminal.log("✅ Teste BLE NUS concluído com sucesso", "GREEN")
         return True
     finally:
         await nus.disconnect()
@@ -55,12 +55,12 @@ async def main() -> None:
     try:
         success = await test_nus_connection()
         if success:
-            Terminal.log("🎉 All tests passed!", "BRIGHT_GREEN")
+            Terminal.log("🎉 Todos os testes passaram!", "BRIGHT_GREEN")
         else:
-            Terminal.log("❌ Some tests failed", "RED")
+            Terminal.log("❌ Alguns testes falharam", "RED")
             sys.exit(1)
     except Exception as e:
-        Terminal.log(f"❌ Test error: {e!s}", "RED")
+        Terminal.log(f"❌ Erro no teste: {e!s}", "RED")
         sys.exit(1)
 
 
