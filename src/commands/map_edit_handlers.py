@@ -1,179 +1,86 @@
 """
-map_edit: send map_get, save CSV map to output/map.txt, copy to input/ for editing,
-diff, confirm, then map_clear (1s pause), then ``map_add <row>`` for each line of input/map.txt,
-and map_SaveRuntime (no parentheses on wire).
+map_edit: map_get (wire), collect ``map_get(b,s,…)`` body rows as CSV, save map.txt, edit, apply wire map_add / map_clear / map_SaveRuntime.
 """
 
 from __future__ import annotations
 
 import asyncio
 import difflib
-import json
-import re
 import shutil
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
-from output_paths import INPUT_DIR, OUTPUT_DIR, ensure_input_dir, ensure_output_dir
+from prompt_toolkit.shortcuts import confirm
 
-if TYPE_CHECKING:
-    from commands.command_handlers import NusPort
-    from protocol_utils import CommandInvocation
+from api.command_handlers import (
+    DEFAULT_LIST_BATCH_ACK_TIMEOUT_SECONDS,
+    DEFAULT_LIST_BATCH_MESSAGES_BEFORE_ACK,
+    CliHandlerContext,
+    cli_command,
+    register_ble_capture,
+    register_ble_try_feed,
+    send_homogeneous_list_body_requests_batched,
+)
+from api.output_paths import INPUT_DIR, OUTPUT_DIR, ensure_input_dir, ensure_output_dir
+from api.protocol_utils import WireCommand, format_message, parse_message, unquote_field
 
-# map_get: device may send many {"data":"…"} lines. After ``map_get`` is sent, a 3s idle timer
-# starts and resets on each valid row; collection ends only after 3s with no new responses.
 MAP_GET_IDLE_SECONDS = 3.0
 MAP_OUTPUT_PATH = OUTPUT_DIR / "map.txt"
 MAP_INPUT_PATH = INPUT_DIR / "map.txt"
 
-_map_get_data_recent: deque[str] = deque(maxlen=8)
+_map_get_wire_recent: deque[str] = deque(maxlen=8)
 _active_map_get_session: Optional["MapGetSession"] = None
 
 
-def _terminal():
-    import main as main_module
-
-    return main_module.Terminal
-
-
-def _sanitize_ble_payload(s: str) -> str:
-    """Strip NUL/BOM and other noise embedded devices often append to NUS text."""
-    return s.replace("\x00", "").replace("\ufeff", "").strip()
-
-
-def _json_object_slices(s: str) -> list[str]:
+def _map_get_body_to_csv_line(cmd: WireCommand) -> Optional[str]:
     """
-    Split ``s`` into top-level ``{...}`` substrings.
+    One map row from ``map_get(b,s,<idx>, <5 fields>)``.
 
-    Handles multiple objects concatenated on one line (``}{``) and leading junk
-    before the first ``{``.
+    Prefer five arguments (index, time, encMedia, trackStatus, offset). If only four
+    arguments are sent, ``cmd.index`` is prepended as the first CSV column.
     """
-    t = _sanitize_ble_payload(s)
-    if not t:
-        return []
-    chunks: list[str] = []
-    n = len(t)
-    i = 0
-    while i < n:
-        j = t.find("{", i)
-        if j < 0:
-            break
-        depth = 0
-        in_string = False
-        escape = False
-        for k in range(j, n):
-            ch = t[k]
-            if in_string:
-                if escape:
-                    escape = False
-                    continue
-                if ch == "\\":
-                    escape = True
-                    continue
-                if ch == '"':
-                    in_string = False
-                continue
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    chunks.append(t[j : k + 1])
-                    i = k + 1
-                    break
-        else:
-            break
-    return chunks
-
-
-def _payload_from_parsed_dict(obj: dict) -> Optional[str]:
-    """``data`` may be a CSV string or a list of numbers from some firmware builds."""
-    v = obj.get("data")
-    if isinstance(v, str):
-        return v.strip() if v.strip() else None
-    if isinstance(v, list) and v:
-        parts: list[str] = []
-        for x in v:
-            if isinstance(x, bool):
-                return None
-            if isinstance(x, int):
-                parts.append(str(x))
-            elif isinstance(x, float):
-                parts.append(str(int(x)) if x.is_integer() else str(x))
-            else:
-                parts.append(str(x))
-        return ",".join(parts)
+    if cmd.name.lower() != "map_get" or not cmd.is_response or cmd.kind != "list_body":
+        return None
+    args = [unquote_field(a) for a in cmd.arguments]
+    if len(args) >= 5:
+        return ",".join(args[:5])
+    if len(args) == 4:
+        return f"{cmd.index},{','.join(args)}"
     return None
 
 
-def _try_parse_map_get_object_json(chunk: str) -> Optional[str]:
-    try:
-        obj = json.loads(chunk)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(obj, dict):
-        return None
-    return _payload_from_parsed_dict(obj)
+def _message_has_map_get_body(text: str) -> bool:
+    for c in parse_message(text):
+        if _map_get_body_to_csv_line(c) is not None:
+            return True
+    return False
 
 
-def _try_parse_map_get_object_regex(t: str) -> Optional[str]:
-    """Last resort: ``{"data": "a,b,c,d,e"}`` with strict double quotes around ``data`` value."""
-    m = re.search(r'\{\s*"data"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}', t)
-    if not m:
-        return None
-    inner = m.group(1).strip()
-    return inner or None
+@register_ble_capture
+def capture_map_get_res_from_ble(message: str) -> None:
+    for line in message.replace("\r\n", "\n").split("\n"):
+        s = line.strip()
+        if s and _message_has_map_get_body(s):
+            _map_get_wire_recent.append(s)
 
 
-def iter_map_get_data_rows(message: str) -> list[str]:
-    """
-    Extract every map row from a BLE notification string (one or more lines, one or more
-    JSON objects per line). Returns CSV strings like ``0,0,0,2,10``.
-    """
+def iter_map_get_wire_csv_lines(message: str) -> list[str]:
     out: list[str] = []
-    for raw_line in message.replace("\r\n", "\n").split("\n"):
-        line = _sanitize_ble_payload(raw_line)
-        if not line:
+    seen: set[str] = set()
+    for part in [message.strip()] + message.replace("\r\n", "\n").split("\n"):
+        key = part.strip()
+        if not key or key in seen:
             continue
-        parsed_any = False
-        for chunk in _json_object_slices(line):
-            row = _try_parse_map_get_object_json(chunk)
+        seen.add(key)
+        for cmd in parse_message(key):
+            row = _map_get_body_to_csv_line(cmd)
             if row is not None:
                 out.append(row)
-                parsed_any = True
-        if parsed_any:
-            continue
-        # Whole line is one JSON blob but slice walker missed (e.g. no braces) — try direct.
-        t = _sanitize_ble_payload(line)
-        if t.startswith("{"):
-            row = _try_parse_map_get_object_json(t)
-            if row is not None:
-                out.append(row)
-                continue
-        row = _try_parse_map_get_object_regex(t)
-        if row is not None:
-            out.append(row)
     return out
 
 
-def capture_map_get_res_from_ble(message: str) -> None:
-    for row in iter_map_get_data_rows(message):
-        _map_get_data_recent.append(row)
-
-
 class MapGetSession:
-    """
-    Collects one CSV row per BLE JSON line. Bleak may invoke the RX callback on a worker
-    thread, so we must not call asyncio.Event.set() from there — schedule work on the loop.
-
-    A ``MAP_GET_IDLE_SECONDS`` timer starts when :meth:`start_idle_watch` runs (after ``map_get``
-    is sent) and resets on every valid row; the session completes only after that much
-    continuous idle (no new rows).
-    """
-
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
         self._done = asyncio.Event()
@@ -183,11 +90,9 @@ class MapGetSession:
         self._finished = False
 
     def start_idle_watch(self) -> None:
-        """Start (or restart) the idle countdown — call once right after ``map_get`` is sent."""
         self._schedule_idle()
 
     def feed(self, data: str) -> None:
-        """Called from BLE path (possibly non-asyncio thread)."""
         self._loop.call_soon_threadsafe(self._on_row, data)
 
     def _schedule_idle(self) -> None:
@@ -196,10 +101,7 @@ class MapGetSession:
         if self._idle_handle is not None:
             self._idle_handle.cancel()
             self._idle_handle = None
-        self._idle_handle = self._loop.call_later(
-            MAP_GET_IDLE_SECONDS,
-            self._complete_after_idle,
-        )
+        self._idle_handle = self._loop.call_later(MAP_GET_IDLE_SECONDS, self._complete_after_idle)
 
     def _on_row(self, data: str) -> None:
         if self._dead or self._finished:
@@ -227,21 +129,18 @@ class MapGetSession:
         await self._done.wait()
 
     @property
-    def row_count(self) -> int:
-        return len(self._parts)
-
-    @property
     def data(self) -> Optional[str]:
         if not self._parts:
             return None
         return "\n".join(self._parts) + "\n"
 
 
+@register_ble_try_feed
 def try_feed_map_get_session(message: str) -> bool:
     if _active_map_get_session is None:
         return False
     fed = False
-    for row in iter_map_get_data_rows(message):
+    for row in iter_map_get_wire_csv_lines(message):
         _active_map_get_session.feed(row)
         fed = True
     return fed
@@ -275,43 +174,49 @@ def _parse_map_row(s: str) -> Optional[tuple[int, int, int, int, int]]:
     return a, b, c, d, e
 
 
-async def _prompt(message: str, color: str = "CYAN") -> str:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: _terminal().input(message, color))
-
-
-async def cmd_map_edit(inv: "CommandInvocation", nus: "NusPort") -> None:
+@cli_command
+async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
     _ = inv
     global _active_map_get_session
-    t = _terminal()
-    _map_get_data_recent.clear()
+    _map_get_wire_recent.clear()
     session = MapGetSession(asyncio.get_running_loop())
     _active_map_get_session = session
     try:
-        if not await nus.send_message("map_get"):
+        wire_get = format_message([WireCommand.single_request("map_get", ())])
+        if not await ctx.send_wire(wire_get):
             return
         session.start_idle_watch()
+        for buffered in list(_map_get_wire_recent):
+            for row in iter_map_get_wire_csv_lines(buffered):
+                session.feed(row)
         await session.wait_until_done()
         raw = session.data
         if raw is None:
-            t.log(
-                f'⏱ map_get: no JSON with "data" within {MAP_GET_IDLE_SECONDS:g}s idle '
-                "after the request.",
+            ctx.log(
+                f"⏱ map_get: nenhuma linha ``map_get(b,s,…)`` em {MAP_GET_IDLE_SECONDS:g}s de inatividade após o pedido.",
                 "YELLOW",
             )
             return
-        body = raw
         ensure_output_dir()
         ensure_input_dir()
-        MAP_OUTPUT_PATH.write_text(body, encoding="utf-8")
+        MAP_OUTPUT_PATH.write_text(raw, encoding="utf-8")
         shutil.copy2(MAP_OUTPUT_PATH, MAP_INPUT_PATH)
         rel_out = MAP_OUTPUT_PATH.relative_to(OUTPUT_DIR.parent)
         rel_in = MAP_INPUT_PATH.relative_to(OUTPUT_DIR.parent)
-        t.log(f"💾 Saved {rel_out} and copied to {rel_in} — edit the file in input/, then save.", "GREEN")
+        ctx.log(
+            f"💾 Salvo {rel_out} e copiado para {rel_in} — edite o arquivo em input/ e salve.",
+            "GREEN",
+        )
 
-        done = await _prompt("Finished editing? Type y to continue: ", "CYAN")
-        if done.strip().lower() not in ("y", "yes"):
-            t.log("Aborted (no diff or apply).", "YELLOW")
+        loop = asyncio.get_running_loop()
+        done = await loop.run_in_executor(
+            None,
+            lambda: confirm(
+                "Terminou a edição? Continuar para ver diferenças e aplicar?"
+            ),
+        )
+        if not done:
+            ctx.log("Cancelado (sem diff ou aplicar).", "YELLOW")
             return
 
         original_text = MAP_OUTPUT_PATH.read_text(encoding="utf-8")
@@ -326,67 +231,69 @@ async def cmd_map_edit(inv: "CommandInvocation", nus: "NusPort") -> None:
                 tofile="input/map.txt",
             )
         )
-        t.log("--- Diff (output/map.txt → input/map.txt) ---", "YELLOW")
+        ctx.log("--- Diferenças (output/map.txt → input/map.txt) ---", "YELLOW")
         if not diff_lines:
-            t.log("(no differences)", "WHITE")
-            t.log("Nothing to apply.", "YELLOW")
+            ctx.log("(sem diferenças)", "WHITE")
+            ctx.log("Nada a aplicar.", "YELLOW")
             return
         for line in diff_lines:
-            t.log(line.rstrip("\n"), "WHITE")
+            ctx.log(line.rstrip("\n"), "WHITE")
 
-        ok = await _prompt(
-            "Were these changes intended? Type y to send map_clear, map_add for each line of input/map.txt, then map_SaveRuntime: ",
-            "YELLOW",
+        ok = await loop.run_in_executor(
+            None,
+            lambda: confirm(
+                "Essas mudanças são intencionais? Serão enviados map_clear, map_add para cada linha de input/map.txt e depois map_SaveRuntime."
+            ),
         )
-        if ok.strip().lower() not in ("y", "yes"):
-            t.log("Aborted — nothing sent.", "YELLOW")
+        if not ok:
+            ctx.log("Cancelado — nada enviado.", "YELLOW")
             return
 
         _, edit_errors = _parse_map_rows(MAP_INPUT_PATH)
         if edit_errors:
-            t.log("⚠ Edited file has lines that are not valid index,time,encMedia,trackStatus,offset:", "RED")
+            ctx.log(
+                "⚠ O arquivo editado tem linhas que não são index,time,encMedia,trackStatus,offset válidos:",
+                "RED",
+            )
             for e in edit_errors:
-                t.log(e, "RED")
-            t.log("Fix the file and run map_edit again.", "YELLOW")
+                ctx.log(e, "RED")
+            ctx.log("Corrija o arquivo e execute map_edit novamente.", "YELLOW")
             return
 
-        t.log("📤 map_clear", "CYAN")
-        if not await nus.send_message("map_clear"):
-            t.log("⚠ map_clear send failed; stopping.", "RED")
+        ctx.log("📤 map_clear", "CYAN")
+        if not await ctx.send_wire(format_message([WireCommand.single_request("map_clear", ())])):
+            ctx.log("⚠ Falha ao enviar map_clear; interrompendo.", "RED")
             return
         await asyncio.sleep(1.0)
 
         map_input_body = MAP_INPUT_PATH.read_text(encoding="utf-8")
-        sent_lines = 0
+        map_add_rows: list[WireCommand] = []
         for raw_line in map_input_body.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
-            msg = f"map_add {line}"
-            t.log(f"📤 {msg}", "CYAN")
-            if not await nus.send_message(msg):
-                t.log("⚠ send_message failed; stopping.", "RED")
-                return
-            sent_lines += 1
-
-        t.log(f"✅ Sent map_clear and {sent_lines} map_add line(s).", "GREEN")
-        await asyncio.sleep(1.0)
-        if not await nus.send_message("map_SaveRuntime"):
-            t.log("⚠ map_SaveRuntime send failed.", "RED")
+            parts = [p.strip() for p in line.split(",")]
+            row_idx = int(parts[0])
+            map_add_rows.append(
+                WireCommand("map_add", "list_body", False, row_idx, tuple(parts[1:]))
+            )
+        if not await send_homogeneous_list_body_requests_batched(
+            ctx,
+            map_add_rows,
+            max_messages_before_ack=DEFAULT_LIST_BATCH_MESSAGES_BEFORE_ACK,
+            ack_timeout=DEFAULT_LIST_BATCH_ACK_TIMEOUT_SECONDS,
+        ):
+            ctx.log("⚠ Falha ao enviar; interrompendo.", "RED")
             return
-        t.log("📤 Sent map_SaveRuntime.", "GREEN")
+
+        ctx.log(f"✅ Enviados map_clear e {len(map_add_rows)} linha(s) map_add.", "GREEN")
+        await asyncio.sleep(1.0)
+        if not await ctx.send_wire(format_message([WireCommand.single_request("map_SaveRuntime", ())])):
+            ctx.log("⚠ Falha ao enviar map_SaveRuntime.", "RED")
+            return
+        ctx.log("📤 map_SaveRuntime enviado.", "GREEN")
     finally:
         session.close()
         if _active_map_get_session is session:
             _active_map_get_session = None
-        _map_get_data_recent.clear()
-
-
-def _register_map_edit_cli_command() -> None:
-    """Register after exports exist; avoids circular import with ``command_handlers``."""
-    from commands.command_handlers import cli_command
-
-    cli_command(cmd_map_edit)
-
-
-_register_map_edit_cli_command()
+        _map_get_wire_recent.clear()

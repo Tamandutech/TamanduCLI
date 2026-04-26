@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""List CLI and incoming command names registered in commands.command_handlers (smoke check)."""
+"""List CLI and incoming command names registered in api.command_handlers (smoke check)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-import commands.command_handlers as ch  # noqa: E402
+import api.command_handlers as ch  # noqa: E402
 
 
 def main() -> None:

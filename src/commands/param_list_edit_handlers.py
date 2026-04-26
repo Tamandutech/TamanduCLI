@@ -1,73 +1,190 @@
 """
-param_edit: send ``param_list``, wait for JSON ``data`` parameter list, save to output/ and input/,
-diff after manual edit, confirm, then ``param_set <name> <value>`` per data row from input,
-then ``param_list`` again to verify.
+param_list: wire list collect and ``cmd_param_list``.
+
+param_edit: fetch list to ``output/``, edit under ``input/``, diff, ``param_set`` per row, verify.
 """
 
 from __future__ import annotations
 
 import asyncio
 import difflib
-import re
 import shutil
-from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from collections import deque
+from typing import Optional
 
-from commands.command_handlers import cli_command
-from commands.param_list_handlers import (
-    PARAM_LIST_RESPONSE_PATH,
-    collect_param_list_to_file,
-    parse_param_list_document,
+from prompt_toolkit.shortcuts import confirm
+
+from api.command_handlers import (
+    DEFAULT_LIST_BATCH_ACK_TIMEOUT_SECONDS,
+    DEFAULT_LIST_BATCH_MESSAGES_BEFORE_ACK,
+    CliHandlerContext,
+    cli_command,
+    register_ble_capture,
+    register_ble_try_feed,
+    send_homogeneous_list_body_requests_batched,
 )
-from output_paths import INPUT_DIR, OUTPUT_DIR, ensure_input_dir, ensure_output_dir
+from api.list_wire import (
+    ListWireCollectionSession,
+    ble_message_has_list_wire_response,
+    feed_list_wire_collection_from_ble_text,
+)
+from api.output_paths import INPUT_DIR, OUTPUT_DIR, ensure_input_dir, ensure_output_dir
+from api.protocol_utils import (
+    WireCommand,
+    WireListHeader,
+    format_message,
+    parse_message,
+    unquote_field,
+)
 
-if TYPE_CHECKING:
-    from commands.command_handlers import NusPort
-    from protocol_utils import CommandInvocation
-
+PARAM_LIST_WAIT_SECONDS = 3.0
+PARAM_LIST_RESPONSE_PATH = OUTPUT_DIR / "param_list.txt"
 PARAM_LIST_INPUT_PATH = INPUT_DIR / "param_list.txt"
+DEFAULT_PARAM_LIST_WIRE = format_message([WireCommand.single_request("param_list", ())])
+
+_param_list_ble_recent: deque[str] = deque(maxlen=128)
+_active_param_list_session: Optional[ListWireCollectionSession] = None
 
 
-def _terminal():
-    import main as main_module
-
-    return main_module.Terminal
-
-
-def _quote_payload(s: str) -> str:
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+@register_ble_capture
+def capture_param_list_res_from_ble(message: str) -> None:
+    for line in message.replace("\r\n", "\n").split("\n"):
+        s = line.strip()
+        if s and ble_message_has_list_wire_response("param_list", s):
+            _param_list_ble_recent.append(s)
 
 
-def _param_set_wire(name: str, value: str) -> str:
-    """``param_set <className>.<parameterName> <value>``; quote value when needed."""
-    if re.search(r'[\s"\\]', value) or value == "":
-        return f"param_set {name} {_quote_payload(value)}"
-    return f"param_set {name} {value}"
+def parse_param_list_document(
+    content: str,
+) -> tuple[Optional[int], dict[int, tuple[str, str]], list[str]]:
+    """
+    Parse ``param_list.txt``: each non-empty line should contain wire ``param_list`` **response**
+    commands (``h`` header and/or ``b`` body). Headers use the four-integer form
+    ``param_list(h,s,T,C,B,j);`` (see :class:`api.protocol_utils.WireListHeader`); a single
+    integer ``param_list(h,s,N);`` is still accepted when parsing old files.
+    """
+    errors: list[str] = []
+    expected: Optional[int] = None
+    rows: dict[int, tuple[str, str]] = {}
+    if not content.strip():
+        return None, {}, ["  (empty document)"]
+
+    for lineno, line in enumerate(content.splitlines(), start=1):
+        raw = line.strip()
+        if not raw:
+            continue
+        wire = raw if raw.endswith(";") else raw + ";"
+        got_param_list = False
+        for cmd in parse_message(wire):
+            if cmd.name.lower() != "param_list" or not cmd.is_response:
+                continue
+            if cmd.kind == "list_header":
+                wh = WireListHeader.from_wire_command(cmd)
+                if wh is None:
+                    errors.append(f"  line {lineno}: param_list header invalid or empty")
+                    continue
+                expected = wh.total_row_count
+                got_param_list = True
+            elif cmd.kind == "list_body":
+                if not cmd.arguments:
+                    errors.append(f"  line {lineno}: param_list body missing arguments")
+                    continue
+                idx = cmd.index
+                name = unquote_field(cmd.arguments[0])
+                value = ", ".join(unquote_field(a) for a in cmd.arguments[1:])
+                rows[idx] = (name, value)
+                got_param_list = True
+        if not got_param_list:
+            errors.append(
+                f"  line {lineno}: expected param_list(h,s,T,C,B,j) or param_list(b,s,…); got {raw[:120]!r}"
+            )
+
+    if expected is None and rows:
+        positive = {k for k in rows if k > 0}
+        if positive:
+            mx = max(positive)
+            if positive == set(range(1, mx + 1)):
+                expected = mx
+
+    return expected, rows, errors
 
 
-def _parse_param_list_file(path: Path) -> tuple[Optional[int], dict[int, tuple[str, str]], list[str]]:
-    return parse_param_list_document(path.read_text(encoding="utf-8"))
+def _log_param_list_collection_summary(
+    session: ListWireCollectionSession, log, completed: bool
+) -> None:
+    status = "completo" if completed else "parcial (tempo esgotado)"
+    log(f"📋 Parâmetros do dispositivo ({status}):", "YELLOW")
+    if session.expected_row_total is not None:
+        log(f"  Esperando {session.expected_row_total} entrada(s)", "CYAN")
+    for idx in sorted(session.rows.keys()):
+        if idx == 0:
+            continue
+        name, value = session.rows[idx]
+        log(f"  [{idx}] {name} = {value}", "WHITE")
 
 
-def _iter_data_rows(expected: int, rows: dict[int, tuple[str, str]]) -> list[tuple[int, str, str]]:
-    """Rows ``0 .. expected-1`` in order (for ``param_set``); caller must ensure all keys exist."""
-    return [(i, rows[i][0], rows[i][1]) for i in range(expected)]
+@register_ble_try_feed
+def try_feed_param_list_session(message: str) -> bool:
+    if _active_param_list_session is None:
+        return False
+    return feed_list_wire_collection_from_ble_text(_active_param_list_session, message)
 
 
-async def _prompt(message: str, color: str = "CYAN") -> str:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: _terminal().input(message, color))
+async def collect_param_list_to_file(
+    ctx: CliHandlerContext, send_wire: str | None = None
+) -> bool:
+    global _active_param_list_session
+    wire = send_wire or DEFAULT_PARAM_LIST_WIRE
+    session = ListWireCollectionSession("param_list", record_raw_wire_lines=True)
+    _active_param_list_session = session
+    try:
+        for msg in list(_param_list_ble_recent):
+            feed_list_wire_collection_from_ble_text(session, msg)
+        if not await ctx.send_wire(wire):
+            return False
+        completed = await session.wait_until_done(PARAM_LIST_WAIT_SECONDS)
+        if not completed:
+            ctx.log(
+                f"⏱ Coleta de param_list excedeu {PARAM_LIST_WAIT_SECONDS:g}s; "
+                "mostrando resultados parciais.",
+                "YELLOW",
+            )
+        ensure_output_dir()
+        if session.write_file_if_non_empty(PARAM_LIST_RESPONSE_PATH):
+            ctx.log(
+                f"💾 Lista de parâmetros salva em {PARAM_LIST_RESPONSE_PATH}",
+                "GREEN",
+            )
+        else:
+            ctx.log(
+                "⚠ Nenhuma lista de parâmetros coletada; arquivo não gravado.",
+                "YELLOW",
+            )
+        _log_param_list_collection_summary(session, ctx.log, completed)
+        return completed
+    finally:
+        if _active_param_list_session is session:
+            _active_param_list_session = None
+        _param_list_ble_recent.clear()
 
 
 @cli_command
-async def cmd_param_edit(inv: "CommandInvocation", nus: "NusPort") -> None:
+async def cmd_param_list(inv: WireCommand, ctx: CliHandlerContext) -> None:
     _ = inv
-    t = _terminal()
+    await collect_param_list_to_file(ctx)
 
-    await collect_param_list_to_file(nus, "param_list")
 
-    if not PARAM_LIST_RESPONSE_PATH.is_file() or not PARAM_LIST_RESPONSE_PATH.read_text(encoding="utf-8").strip():
-        t.log("⚠ output/param_list.txt missing or empty after param_list.", "YELLOW")
+@cli_command
+async def cmd_param_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
+    _ = inv
+
+    await collect_param_list_to_file(ctx)
+
+    if (
+        not PARAM_LIST_RESPONSE_PATH.is_file()
+        or not PARAM_LIST_RESPONSE_PATH.read_text(encoding="utf-8").strip()
+    ):
+        ctx.log("⚠ output/param_list.txt ausente ou vazio após param_list.", "YELLOW")
         return
 
     ensure_output_dir()
@@ -75,11 +192,20 @@ async def cmd_param_edit(inv: "CommandInvocation", nus: "NusPort") -> None:
     shutil.copy2(PARAM_LIST_RESPONSE_PATH, PARAM_LIST_INPUT_PATH)
     rel_out = PARAM_LIST_RESPONSE_PATH.relative_to(OUTPUT_DIR.parent)
     rel_in = PARAM_LIST_INPUT_PATH.relative_to(OUTPUT_DIR.parent)
-    t.log(f"💾 Wrote {rel_out} and copied to {rel_in} — edit the file under input/, then save.", "GREEN")
+    ctx.log(
+        f"💾 Gravado {rel_out} e copiado para {rel_in} — edite o arquivo em input/ e salve.",
+        "GREEN",
+    )
 
-    done = await _prompt("Finished editing? Type y to continue: ", "CYAN")
-    if done.strip().lower() not in ("y", "yes"):
-        t.log("Aborted (no diff or apply).", "YELLOW")
+    loop = asyncio.get_running_loop()
+    done = await loop.run_in_executor(
+        None,
+        lambda: confirm(
+            "Terminou a edição? Continuar para ver diferenças e aplicar?"
+        ),
+    )
+    if not done:
+        ctx.log("Cancelado (sem diff ou aplicar).", "YELLOW")
         return
 
     original_text = PARAM_LIST_RESPONSE_PATH.read_text(encoding="utf-8")
@@ -94,57 +220,84 @@ async def cmd_param_edit(inv: "CommandInvocation", nus: "NusPort") -> None:
             tofile="input/param_list.txt",
         )
     )
-    t.log("--- Diff (output/param_list.txt → input/param_list.txt) ---", "YELLOW")
+    ctx.log(
+        "--- Diferenças (output/param_list.txt → input/param_list.txt) ---", "YELLOW"
+    )
     if not diff_lines:
-        t.log("(no differences)", "WHITE")
-        t.log("Nothing to apply.", "YELLOW")
+        ctx.log("(sem diferenças)", "WHITE")
+        ctx.log("Nada a aplicar.", "YELLOW")
         return
     for line in diff_lines:
-        t.log(line.rstrip("\n"), "WHITE")
+        ctx.log(line.rstrip("\n"), "WHITE")
 
-    ok = await _prompt(
-        "Apply these changes? Type y to send param_set for each parameter line from input/param_list.txt: ",
-        "YELLOW",
+    ok = await loop.run_in_executor(
+        None,
+        lambda: confirm(
+            "Aplicar essas mudanças? Será enviado param_set para cada linha param_list(b,s,…) de input/param_list.txt."
+        ),
     )
-    if ok.strip().lower() not in ("y", "yes"):
-        t.log("Aborted — no param_set commands sent.", "YELLOW")
+    if not ok:
+        ctx.log("Cancelado — nenhum comando param_set enviado.", "YELLOW")
         return
 
-    expected, edited_rows, edit_errors = _parse_param_list_file(PARAM_LIST_INPUT_PATH)
+    expected, edited_rows, edit_errors = parse_param_list_document(
+        PARAM_LIST_INPUT_PATH.read_text(encoding="utf-8")
+    )
     if edit_errors:
-        t.log("⚠ Edited file has invalid lines (expected 'Parameters: N' and 'i - name: value'):", "RED")
+        ctx.log(
+            "⚠ O arquivo editado tem linhas inválidas (cada linha: param_list(h,s,T,C,B,j); ou param_list(b,s,i,...);):",
+            "RED",
+        )
         for e in edit_errors:
-            t.log(e, "RED")
-        t.log("Fix the file and run param_edit again.", "YELLOW")
+            ctx.log(e, "RED")
+        ctx.log("Corrija o arquivo e execute param_edit novamente.", "YELLOW")
         return
     if expected is None:
-        t.log("⚠ Edited file must include a line like: Parameters: 2", "RED")
+        ctx.log(
+            "⚠ O arquivo editado deve incluir o cabeçalho da lista param_list (param_list(h,s,T,C,B,j);) "
+            "ou linhas completas param_list(b,s,…) para os índices 1..N.",
+            "RED",
+        )
         return
     missing = [i for i in range(expected) if i not in edited_rows]
     if missing:
-        t.log(f"⚠ Missing parameter index(es) for Parameters: {expected}: {missing!r}", "RED")
+        ctx.log(
+            f"⚠ Falta(m) índice(s) de parâmetro (esperados {expected}): {missing!r}",
+            "RED",
+        )
         return
     extra = [i for i in edited_rows if i < 0 or i >= expected]
     if extra:
-        t.log(f"⚠ Index out of range 0..{expected - 1}: {extra!r}", "RED")
+        ctx.log(f"⚠ Índice fora do intervalo 0..{expected - 1}: {extra!r}", "RED")
         return
 
-    to_apply = _iter_data_rows(expected, edited_rows)
+    to_apply = [(i, edited_rows[i][0], edited_rows[i][1]) for i in range(expected)]
     if not to_apply:
-        t.log("No parameter rows to send.", "YELLOW")
+        ctx.log("Nenhuma linha de parâmetro para enviar.", "YELLOW")
         return
 
-    for idx, name, value in to_apply:
-        line = _param_set_wire(name, value)
-        t.log(f"📤 {line}", "CYAN")
-        if not await nus.send_message(line):
-            t.log("⚠ send_message failed; stopping.", "RED")
-            return
+    param_set_rows = [
+        WireCommand("param_set", "list_body", False, idx, (name, value))
+        for idx, name, value in to_apply
+    ]
+    if not await send_homogeneous_list_body_requests_batched(
+        ctx,
+        param_set_rows,
+        max_messages_before_ack=DEFAULT_LIST_BATCH_MESSAGES_BEFORE_ACK,
+        ack_timeout=DEFAULT_LIST_BATCH_ACK_TIMEOUT_SECONDS,
+    ):
+        ctx.log("⚠ Falha ao enviar; interrompendo.", "RED")
+        return
 
-    t.log(f"✅ Sent {len(to_apply)} param_set command(s). Requesting param_list to verify…", "GREEN")
+    ctx.log(
+        f"✅ Enviado(s) {len(to_apply)} comando(s) param_set. Solicitando param_list para verificar…",
+        "GREEN",
+    )
 
-    await collect_param_list_to_file(nus, "param_list")
+    await collect_param_list_to_file(ctx)
     if PARAM_LIST_RESPONSE_PATH.is_file():
-        t.log("✅ Refreshed output/param_list.txt from device.", "GREEN")
+        ctx.log("✅ output/param_list.txt atualizado a partir do dispositivo.", "GREEN")
     else:
-        t.log("⚠ param_list after apply did not produce output/param_list.txt.", "YELLOW")
+        ctx.log(
+            "⚠ param_list após aplicar não produziu output/param_list.txt.", "YELLOW"
+        )

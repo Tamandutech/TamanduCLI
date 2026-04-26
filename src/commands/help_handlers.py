@@ -1,184 +1,95 @@
 """
-BLE help flow: help_res(...) parsing, collection session, and cmd_help.
+BLE help flow: collect ``help(h,...)`` / ``help(b,...)`` wire responses and ``cmd_help``.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections import deque
-from typing import TYPE_CHECKING, Optional
+from typing import Callable, Optional
 
-from commands.command_handlers import cli_command
-from output_paths import OUTPUT_DIR, ensure_output_dir
-from protocol_utils import parse_command_message
-
-if TYPE_CHECKING:
-    from commands.command_handlers import NusPort
-    from protocol_utils import CommandInvocation
+from api.command_handlers import (
+    CliHandlerContext,
+    cli_command,
+    register_ble_capture,
+    register_ble_try_feed,
+)
+from api.list_wire import (
+    ListWireCollectionSession,
+    ble_message_has_list_wire_response,
+    feed_list_wire_collection_from_ble_text,
+)
+from api.output_paths import OUTPUT_DIR, ensure_output_dir
+from api.protocol_utils import WireCommand, format_message
 
 HELP_WAIT_SECONDS = 3.0
 HELP_RESPONSE_PATH = OUTPUT_DIR / "help_response.txt"
 
-_help_res_recent: deque[str] = deque(maxlen=64)
-
-_active_help_session: Optional["HelpCollectionSession"] = None
-
-
-def _terminal():
-    import main as main_module
-
-    return main_module.Terminal
+_help_recent: deque[str] = deque(maxlen=64)
+_active_help_session: Optional[ListWireCollectionSession] = None
 
 
-def parse_help_res(line: str) -> Optional[tuple[int, str, str]]:
-    """
-    Expects the whole line (after strip) to be ``help_res(...)`` only — same rules as
-    :func:`~protocol_utils.parse_command_message`.
-
-    Wire shapes:
-
-    - Header: help_res(0,"header",N) — N is the number of command rows (indices 1..N).
-    - Rows (3 fields): help_res(index, name, value) — legacy.
-    - Rows (4 fields): help_res(index, name, params, description) — params e.g. \"none\" or
-      \"reference,value\"; stored value is \"params, description\" for display/file.
-    """
-    inv = parse_command_message(line)
-    if inv is None or inv.name != "help_res":
-        return None
-    args = inv.params
-    if len(args) not in (3, 4):
-        return None
-    try:
-        idx = int(args[0].strip())
-    except ValueError:
-        return None
-    name = args[1]
-    if len(args) == 3:
-        return idx, name, args[2]
-    params, description = args[2], args[3]
-    return idx, name, f"{params}, {description}"
-
-
-def capture_help_res_from_ble(message: str) -> None:
-    """Remember help_res lines so a burst that starts before the session is active is not lost."""
+@register_ble_capture
+def capture_help_from_ble(message: str) -> None:
+    """Buffer notifications that contain help list wire responses (replay when session starts)."""
     for line in message.replace("\r\n", "\n").split("\n"):
         s = line.strip()
-        if s and parse_help_res(s) is not None:
-            _help_res_recent.append(s)
+        if s and ble_message_has_list_wire_response("help", s):
+            _help_recent.append(s)
 
 
-class HelpCollectionSession:
-    """Collects help_res lines until header count is satisfied or timeout."""
+capture_help_res_from_ble = capture_help_from_ble
 
-    def __init__(self) -> None:
-        self._rows: dict[int, tuple[str, str]] = {}
-        self._expected_command_count: Optional[int] = None
-        self._done = asyncio.Event()
 
-    def feed_parsed(self, parsed: tuple[int, str, str]) -> None:
-        idx, name, value = parsed
-        self._rows[idx] = (name, value)
-        if idx == 0 and name.lower() == "header":
-            try:
-                self._expected_command_count = int(value.strip())
-            except ValueError:
-                _terminal().log(
-                    f"⚠ help_res(0,\"header\",…): entry count is not an integer: {value!r}",
-                    "YELLOW",
-                )
-        if self._is_complete():
-            self._done.set()
-
-    def _is_complete(self) -> bool:
-        if self._expected_command_count is None or 0 not in self._rows:
-            return False
-        name0, _ = self._rows[0]
-        if name0.lower() != "header":
-            return False
-        n = self._expected_command_count
-        return all(i in self._rows for i in range(1, n + 1))
-
-    async def wait_until_done(self, timeout: float) -> bool:
-        try:
-            await asyncio.wait_for(self._done.wait(), timeout=timeout)
-            return True
-        except asyncio.TimeoutError:
-            return False
-
-    def write_file_and_log(self, completed: bool) -> None:
-        t = _terminal()
-        lines_out: list[str] = []
-        for idx in sorted(self._rows.keys()):
-            name, value = self._rows[idx]
-
-            def q(x: str) -> str:
-                return '"' + x.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-            if idx == 0 and name.lower() == "header":
-                try:
-                    n = int(value.strip())
-                    lines_out.append(f"help_res(0,{q(name)},{n})")
-                except ValueError:
-                    lines_out.append(f"help_res(0,{q(name)},{q(value)})")
-            else:
-                lines_out.append(f"help_res({idx},{q(name)},{q(value)})")
-        body = "\n".join(lines_out)
-        if body:
-            ensure_output_dir()
-            HELP_RESPONSE_PATH.write_text(body + "\n", encoding="utf-8")
-            t.log(f"💾 Help list saved to {HELP_RESPONSE_PATH}", "GREEN")
+def _log_help_collection_summary(
+    session: ListWireCollectionSession, log: Callable[[str, str], None], completed: bool
+) -> None:
+    status = "completo" if completed else "parcial (tempo esgotado)"
+    log(f"📋 Help do dispositivo ({status}):", "YELLOW")
+    for idx in sorted(session.rows.keys()):
+        name, value = session.rows[idx]
+        if idx == 0:
+            n = session.expected_row_total
+            log(
+                f"  [0] cabeçalho — esperando {n if n is not None else value} linha(s) de comando",
+                "CYAN",
+            )
         else:
-            t.log("⚠ No help_res lines collected; file not written.", "YELLOW")
-
-        status = "complete" if completed else "partial (timeout)"
-        t.log(f"📋 Device help ({status}):", "YELLOW")
-        for idx in sorted(self._rows.keys()):
-            name, value = self._rows[idx]
-            if idx == 0:
-                n = self._expected_command_count
-                t.log(
-                    f"  [0] header — expecting {n if n is not None else value} command row(s)",
-                    "CYAN",
-                )
-            else:
-                t.log(f"  [{idx}] {name}: {value}", "WHITE")
+            log(f"  [{idx}] {name}: {value}", "WHITE")
 
 
+@register_ble_try_feed
 def try_feed_help_session(message: str) -> bool:
-    """Consume help_res lines during an active help collection session."""
     if _active_help_session is None:
         return False
-    fed = False
-    for line in message.replace("\r\n", "\n").split("\n"):
-        parsed = parse_help_res(line.strip())
-        if parsed:
-            _active_help_session.feed_parsed(parsed)
-            fed = True
-    return fed
+    return feed_list_wire_collection_from_ble_text(_active_help_session, message)
 
 
 @cli_command
-async def cmd_help(inv: "CommandInvocation", nus: "NusPort") -> None:
-    """Send help(...) over BLE, wait/collect help_res rows, then persist and print."""
+async def cmd_help(inv: WireCommand, ctx: CliHandlerContext) -> None:
     global _active_help_session
-    t = _terminal()
-    session = HelpCollectionSession()
+    session = ListWireCollectionSession("help", record_raw_wire_lines=False)
     _active_help_session = session
     try:
-        for line in list(_help_res_recent):
-            p = parse_help_res(line)
-            if p:
-                session.feed_parsed(p)
-        if not await nus.send_message(inv.line):
+        for buffered in list(_help_recent):
+            feed_list_wire_collection_from_ble_text(session, buffered)
+        wire = format_message([WireCommand.single_request("help", inv.arguments)])
+        if not await ctx.send_wire(wire):
             return
         completed = await session.wait_until_done(HELP_WAIT_SECONDS)
         if not completed:
-            t.log(
-                f"⏱ Help collection timed out after {HELP_WAIT_SECONDS:g}s; showing partial results.",
+            ctx.log(
+                f"⏱ Coleta de help excedeu {HELP_WAIT_SECONDS:g}s; mostrando resultados parciais.",
                 "YELLOW",
             )
-        session.write_file_and_log(completed)
+        ensure_output_dir()
+        if session.write_file_if_non_empty(HELP_RESPONSE_PATH):
+            ctx.log(f"💾 Lista de help salva em {HELP_RESPONSE_PATH}", "GREEN")
+        else:
+            ctx.log(
+                "⚠ Nenhuma linha wire de help coletada; arquivo não gravado.", "YELLOW"
+            )
+        _log_help_collection_summary(session, ctx.log, completed)
     finally:
         if _active_help_session is session:
             _active_help_session = None
-        _help_res_recent.clear()
+        _help_recent.clear()

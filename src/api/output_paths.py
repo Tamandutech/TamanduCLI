@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# Repository root (parent of ``src/``).
-_APP_ROOT = Path(__file__).resolve().parent.parent
+# Repository root (parent of ``src/``): ``src/api`` → ``src`` → repo root.
+_APP_ROOT = Path(__file__).resolve().parent.parent.parent
 OUTPUT_DIR = _APP_ROOT / "output"
 INPUT_DIR = _APP_ROOT / "input"
 
