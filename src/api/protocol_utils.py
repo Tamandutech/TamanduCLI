@@ -4,7 +4,7 @@ Wire protocol: semicolon-separated commands.
 Each command is ``name(mode,req_or_resp,...)`` where ``mode`` is ``s`` (single), ``h`` (list header),
 or ``b`` (list body); ``req_or_resp`` is ``r`` (request) or ``s`` (response).
 
-In-memory representation: :class:`WireCommand`.
+In-memory representation: :class:`WireCommand` and list headers :class:`WireListHeader`.
 """
 
 from __future__ import annotations
@@ -49,6 +49,66 @@ class WireCommand:
             index=0,
             arguments=tuple(arguments),
         )
+
+
+@dataclass(frozen=True)
+class WireListHeader:
+    """
+    List ``h`` (list_header) payload: always four integers ``T, C, B, j`` on the wire.
+
+    - ``T`` (`total_row_count`): total ``list_body`` rows in the operation (indices ``1..T``).
+    - ``C`` (`rows_in_this_message`): ``list_body`` commands in this same message after this header.
+    - ``B`` (`total_messages`): BLE messages in this batched transfer (``j`` in ``0..B-1``).
+    - ``j`` (`message_index`): zero-based index of this message among ``B``.
+
+    The host **always emits** all four fields. :meth:`from_wire_command` still accepts a
+    single integer (historical one-argument wire) and normalizes it to ``(T, 1, 1, 0)`` when
+    parsing old transcripts or firmware that has not upgraded yet.
+    """
+
+    total_row_count: int
+    rows_in_this_message: int
+    total_messages: int
+    message_index: int
+
+    @staticmethod
+    def single_message(total_row_count: int) -> WireListHeader:
+        """Whole list in one BLE message: ``(T, 1, 1, 0)``."""
+        return WireListHeader(total_row_count, 1, 1, 0)
+
+    def to_wire_command(self, name: str, *, is_response: bool) -> WireCommand:
+        """Convert to a ``list_header`` command (always four comma-separated arguments)."""
+        args = tuple(
+            str(x)
+            for x in (
+                self.total_row_count,
+                self.rows_in_this_message,
+                self.total_messages,
+                self.message_index,
+            )
+        )
+        return WireCommand(name.strip(), "list_header", is_response, 0, args)
+
+    @staticmethod
+    def from_wire_command(cmd: WireCommand) -> Optional[WireListHeader]:
+        """Parse a ``list_header`` into :class:`WireListHeader`, or ``None`` if invalid."""
+        if cmd.kind != "list_header" or not cmd.arguments:
+            return None
+        a = cmd.arguments
+        if len(a) >= 4:
+            try:
+                return WireListHeader(
+                    int(unquote_field(a[0])),
+                    int(unquote_field(a[1])),
+                    int(unquote_field(a[2])),
+                    int(unquote_field(a[3])),
+                )
+            except ValueError:
+                return None
+        try:
+            return WireListHeader.single_message(int(unquote_field(a[0])))
+        except ValueError:
+            return None
 
 
 def split_top_level_commas(s: str) -> list[str]:
@@ -256,6 +316,98 @@ def message_byte_length(message: str) -> int:
     return len(message.encode("utf-8"))
 
 
+DEFAULT_WIRE_MESSAGE_MAX_BYTES = 256
+
+
+def _batched_wire_message_byte_length_pessimistic(
+    command_name: str,
+    total_commands: int,
+    chunk: Sequence[WireCommand],
+) -> int:
+    """
+    Upper bound on UTF-8 length of a batched message (header + bodies) for packing.
+
+    Uses a pessimistic list_header so real headers (smaller batch counts / indices)
+    never exceed the budget computed with this header.
+    """
+    t = total_commands
+    hdr = WireListHeader(
+        t,
+        len(chunk),
+        t,
+        t - 1 if t > 0 else 0,
+    ).to_wire_command(command_name, is_response=False)
+    parts = [format_wire_command(hdr)] + [format_wire_command(c) for c in chunk]
+    return len((";".join(parts) + ";").encode("utf-8"))
+
+
+def format_batched_wire_message(
+    command_name: str,
+    header: WireListHeader,
+    body_list_rows: Sequence[WireCommand],
+) -> str:
+    """
+    One BLE message: batch :class:`WireListHeader` then each body as ``name(b,r,<index>, <args…>)``.
+    """
+    hdr = header.to_wire_command(command_name, is_response=False)
+    parts = [format_wire_command(hdr)] + [
+        format_wire_command(c) for c in body_list_rows
+    ]
+    return ";".join(parts) + ";"
+
+
+def pack_list_body_requests_into_batched_wire_messages(
+    list_bodies: Sequence[WireCommand],
+    *,
+    max_bytes: int = DEFAULT_WIRE_MESSAGE_MAX_BYTES,
+) -> list[str]:
+    """
+    Pack homogeneous ``list_body`` **requests** into one or more batched wire messages.
+
+    Each body is formatted as ``name(b,r,<index>,<args…>)``. Each output string is
+    ``header;body1;body2;…;`` under ``max_bytes`` UTF-8 bytes (greedy packing). If
+    one body alone exceeds ``max_bytes``, it is still emitted as its own message.
+    """
+    if not list_bodies:
+        return []
+    name = list_bodies[0].name
+    for c in list_bodies:
+        if c.kind != "list_body" or c.is_response or c.name != name:
+            raise ValueError(
+                "pack_list_body_requests_into_batched_wire_messages expects "
+                f"list_body requests with the same name; got {c!r} vs first {name!r}"
+            )
+    n = len(list_bodies)
+    chunks: list[list[WireCommand]] = []
+    i = 0
+    while i < n:
+        cur: list[WireCommand] = []
+        while i < n:
+            trial = cur + [list_bodies[i]]
+            if (
+                _batched_wire_message_byte_length_pessimistic(name, n, trial)
+                <= max_bytes
+            ):
+                cur = trial
+                i += 1
+            else:
+                break
+        if cur:
+            chunks.append(cur)
+        elif i < n:
+            chunks.append([list_bodies[i]])
+            i += 1
+    b = len(chunks)
+    return [
+        format_batched_wire_message(
+            name,
+            WireListHeader(n, len(chunks[j]), b, j),
+            chunks[j],
+        )
+        for j in range(b)
+    ]
+
+
 def batch_wire_messages(
     commands: Sequence[WireCommand],
     max_bytes: int = 256,
@@ -382,7 +534,9 @@ def parse_command_invocation(line: str) -> Optional[WireCommand]:
     return parse_command_line(line)
 
 
-def digest_invocation_parameters(cmd: WireCommand, expected_names: Sequence[str]) -> dict[str, str]:
+def digest_invocation_parameters(
+    cmd: WireCommand, expected_names: Sequence[str]
+) -> dict[str, str]:
     """Map the first N string arguments by position to ``expected_names`` (unquoted values)."""
     out: dict[str, str] = {}
     for i, key in enumerate(expected_names):

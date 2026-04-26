@@ -100,13 +100,13 @@ Exemplos:
 
 ```text
 help(s,r);
-param_list(h,s,5);
+param_list(h,s,5,1,1,0);
 param_list(b,s,1,"param_get","ref","read a parameter");
 map_get(b,s,0,1,2,3,4,5);
 ```
 
 - **Single** (`s`): após `r` ou `s` vêm os argumentos do comando, se houver.
-- **Lista** (`h` / `b`): no **`h`**, após `r`/`s` costuma vir o tamanho da lista; no **`b`**, após `r`/`s` vem o **índice** da linha na lista e em seguida os argumentos daquela linha.
+- **Lista** (`h` / `b`): no **`h`**, após `r`/`s` vêm **quatro inteiros** `T,C,B,j` (total de linhas, linhas nesta mensagem, total de mensagens, índice da mensagem); ver `WireListHeader` em `api/protocol_utils.py` e `docs/wire_protocol_firmware_implementation.md`. No **`b`**, após `r`/`s` vem o **índice** da linha e os argumentos dessa linha.
 - O firmware costuma limitar o tamanho de cada mensagem (ex.: **256 bytes** no NUS); listas longas são fatiadas em várias mensagens.
 
 Na **CLI**, comandos **já registrados** aceitam **atalho**: digitar só `help` ou `help()` é expandido para `help(s,r);` antes do envio. Para o restante, use a mensagem **wire** completa ou confirme envio como texto bruto.

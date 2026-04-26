@@ -37,7 +37,7 @@ class IncomingRouter:
         want = name.lower()
         while True:
             for i, c in enumerate(self._items):
-                if c.name != want or c.is_response != is_response:
+                if c.name.lower() != want or c.is_response != is_response:
                     continue
                 if predicate is not None and not predicate(c):
                     continue

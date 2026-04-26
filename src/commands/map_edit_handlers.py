@@ -11,11 +11,16 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
+from prompt_toolkit.shortcuts import confirm
+
 from api.command_handlers import (
+    DEFAULT_LIST_BATCH_ACK_TIMEOUT_SECONDS,
+    DEFAULT_LIST_BATCH_MESSAGES_BEFORE_ACK,
     CliHandlerContext,
     cli_command,
     register_ble_capture,
     register_ble_try_feed,
+    send_homogeneous_list_body_requests_batched,
 )
 from api.output_paths import INPUT_DIR, OUTPUT_DIR, ensure_input_dir, ensure_output_dir
 from api.protocol_utils import WireCommand, format_message, parse_message, unquote_field
@@ -23,8 +28,6 @@ from api.protocol_utils import WireCommand, format_message, parse_message, unquo
 MAP_GET_IDLE_SECONDS = 3.0
 MAP_OUTPUT_PATH = OUTPUT_DIR / "map.txt"
 MAP_INPUT_PATH = INPUT_DIR / "map.txt"
-
-_AFFIRMATIVE = frozenset({"y", "yes", "s", "sim"})
 
 _map_get_wire_recent: deque[str] = deque(maxlen=8)
 _active_map_get_session: Optional["MapGetSession"] = None
@@ -205,8 +208,14 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
             "GREEN",
         )
 
-        done = (await ctx.prompt_line("Terminou a edição? Digite y ou s para continuar: ")).strip().lower()
-        if done not in _AFFIRMATIVE:
+        loop = asyncio.get_running_loop()
+        done = await loop.run_in_executor(
+            None,
+            lambda: confirm(
+                "Terminou a edição? Continuar para ver diferenças e aplicar?"
+            ),
+        )
+        if not done:
             ctx.log("Cancelado (sem diff ou aplicar).", "YELLOW")
             return
 
@@ -230,12 +239,13 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
         for line in diff_lines:
             ctx.log(line.rstrip("\n"), "WHITE")
 
-        ok = (
-            await ctx.prompt_line(
-                "Essas mudanças são intencionais? Digite y ou s para enviar map_clear, map_add para cada linha de input/map.txt e depois map_SaveRuntime: "
-            )
-        ).strip().lower()
-        if ok not in _AFFIRMATIVE:
+        ok = await loop.run_in_executor(
+            None,
+            lambda: confirm(
+                "Essas mudanças são intencionais? Serão enviados map_clear, map_add para cada linha de input/map.txt e depois map_SaveRuntime."
+            ),
+        )
+        if not ok:
             ctx.log("Cancelado — nada enviado.", "YELLOW")
             return
 
@@ -257,20 +267,26 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
         await asyncio.sleep(1.0)
 
         map_input_body = MAP_INPUT_PATH.read_text(encoding="utf-8")
-        sent_lines = 0
+        map_add_rows: list[WireCommand] = []
         for raw_line in map_input_body.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
             parts = [p.strip() for p in line.split(",")]
-            msg = format_message([WireCommand.single_request("map_add", tuple(parts))])
-            ctx.log(f"📤 {msg}", "CYAN")
-            if not await ctx.send_wire(msg):
-                ctx.log("⚠ Falha ao enviar; interrompendo.", "RED")
-                return
-            sent_lines += 1
+            row_idx = int(parts[0])
+            map_add_rows.append(
+                WireCommand("map_add", "list_body", False, row_idx, tuple(parts[1:]))
+            )
+        if not await send_homogeneous_list_body_requests_batched(
+            ctx,
+            map_add_rows,
+            max_messages_before_ack=DEFAULT_LIST_BATCH_MESSAGES_BEFORE_ACK,
+            ack_timeout=DEFAULT_LIST_BATCH_ACK_TIMEOUT_SECONDS,
+        ):
+            ctx.log("⚠ Falha ao enviar; interrompendo.", "RED")
+            return
 
-        ctx.log(f"✅ Enviados map_clear e {sent_lines} linha(s) map_add.", "GREEN")
+        ctx.log(f"✅ Enviados map_clear e {len(map_add_rows)} linha(s) map_add.", "GREEN")
         await asyncio.sleep(1.0)
         if not await ctx.send_wire(format_message([WireCommand.single_request("map_SaveRuntime", ())])):
             ctx.log("⚠ Falha ao enviar map_SaveRuntime.", "RED")

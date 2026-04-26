@@ -9,9 +9,21 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Protocol, TypeVar, cast, runtime_checkable
+from typing import (
+    Awaitable,
+    Callable,
+    Protocol,
+    TypeVar,
+    cast,
+    runtime_checkable,
+)
 
 from api.incoming import IncomingRouter
+from api.list_wire import (
+    DEFAULT_LIST_BATCH_ACK_TIMEOUT_SECONDS,
+    DEFAULT_LIST_BATCH_MESSAGES_BEFORE_ACK,
+    send_homogeneous_list_body_requests_batched,
+)
 from api.protocol_utils import (
     WireCommand,
     normalize_cli_input,
@@ -19,7 +31,9 @@ from api.protocol_utils import (
     parse_message,
     parse_wire_command_segment,
 )
-from api.protocol_utils import digest_invocation_parameters as digest_invocation_parameters
+from api.protocol_utils import (
+    digest_invocation_parameters as digest_invocation_parameters,
+)
 from api.protocol_utils import is_command_invocation as is_command_invocation_line
 
 __all__ = [
@@ -47,6 +61,9 @@ __all__ = [
     "register_ble_try_feed",
     "register_cli_command",
     "register_incoming_command",
+    "DEFAULT_LIST_BATCH_ACK_TIMEOUT_SECONDS",
+    "DEFAULT_LIST_BATCH_MESSAGES_BEFORE_ACK",
+    "send_homogeneous_list_body_requests_batched",
     "split_top_level_commas",
     "unquote_field",
 ]
@@ -175,7 +192,11 @@ def cli_command(
     explicit = name_or_fn
 
     def decorator(fn: FCli) -> FCli:
-        cmd_name = explicit.lower() if isinstance(explicit, str) else _infer_cli_command_name(fn)
+        cmd_name = (
+            explicit.lower()
+            if isinstance(explicit, str)
+            else _infer_cli_command_name(fn)
+        )
         register_cli_command(cmd_name, fn)
         return fn
 
@@ -193,7 +214,9 @@ def incoming_command(
 
     def decorator(fn: FInc) -> FInc:
         inc_name = (
-            explicit.lower() if isinstance(explicit, str) else _infer_incoming_command_name(fn)
+            explicit.lower()
+            if isinstance(explicit, str)
+            else _infer_incoming_command_name(fn)
         )
         register_incoming_command(inc_name, fn)
         return fn
