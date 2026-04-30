@@ -136,6 +136,51 @@ You **do not** need these for every script — only when the BLE flow requires t
 
 For “send → wait for one reply → show”, **`@cli_command`** plus **`ctx`** / **`incoming`** is usually enough.
 
+### Realtime monitor with decorators
+
+The `open_realtime` command opens a **read-only** TUI monitor window. While this window is open, normal prompt input is paused.
+
+To add new realtime variables, you do not need per-variable custom functions in the `api/` domain: just register getter functions with **`@register_realtime_variable`**.
+
+- Each registered function runs automatically at its own `refresh_seconds` interval.
+- The latest successful value is kept in memory while the realtime window is open.
+- Registered functions can be synchronous or asynchronous.
+- A function can accept `ctx: CliHandlerContext` (for wire send + BLE wait) or no arguments.
+
+Example reading battery voltage with `battery_get()`:
+
+```python
+from __future__ import annotations
+
+import re
+
+from api.command_handlers import CliHandlerContext, WireCommand
+from api.protocol_utils import format_message
+from api.realtime import register_realtime_variable
+
+_VOLTAGE_RE = re.compile(r"(-?\d+(?:\.\d+)?)")
+
+
+@register_realtime_variable("battery", refresh_seconds=1.0, order=0)
+async def get_realtime_battery_from_device(ctx: CliHandlerContext) -> str:
+    wire = format_message([WireCommand.single_request("battery_get", ())])
+    await ctx.send_wire(wire)
+    resp = await ctx.incoming.wait_for(
+        "battery_get",
+        timeout=2.0,
+        predicate=lambda c: c.kind == "single",
+    )
+    payload = " ".join(resp.arguments).strip() or "unknown"
+    m = _VOLTAGE_RE.search(payload)
+    return f"{m.group(1)} V" if m else payload
+```
+
+After registering your realtime functions (in a loaded `*_handlers.py` module), run:
+
+```text
+open_realtime
+```
+
 ### Step-by-step: CLI command
 
 **Plugin under `src/commands/`:**
