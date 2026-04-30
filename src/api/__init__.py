@@ -41,6 +41,11 @@ from api.protocol_utils import (
     parse_message,
     parse_wire_command_segment,
 )
+from api.realtime import (
+    REALTIME_VARIABLES,
+    RealtimeVariableSpec,
+    register_realtime_variable,
+)
 
 __all__ = [
     "BLE_CAPTURE_HOOKS",
@@ -71,6 +76,9 @@ __all__ = [
     "normalize_cli_input",
     "parse_message",
     "parse_wire_command_segment",
+    "REALTIME_VARIABLES",
+    "RealtimeVariableSpec",
+    "register_realtime_variable",
     "register_cli_command",
     "register_incoming_command",
     "scan_devices",

@@ -136,6 +136,51 @@ from api.command_handlers import CliHandlerContext, WireCommand, cli_command
 
 Para um comando simples (“pedir → esperar resposta → mostrar”), em geral basta **`@cli_command`** e a API de **`ctx`** / **`incoming`**.
 
+### Realtime monitor com decorators
+
+O comando `open_realtime` abre uma janela TUI em modo **somente leitura** para monitorar variáveis em tempo real. Enquanto essa janela está aberta, o prompt normal fica pausado.
+
+Para adicionar novas variáveis realtime, não precisa criar funções customizadas no domínio `api/` para cada caso: basta registrar funções com o decorator **`@register_realtime_variable`**.
+
+- Cada função registrada roda automaticamente no intervalo definido em `refresh_seconds`.
+- O valor mais recente de cada variável fica em memória enquanto a janela realtime estiver aberta.
+- A função registrada pode ser síncrona ou assíncrona.
+- A função pode receber `ctx: CliHandlerContext` (para enviar wire e esperar resposta BLE) ou não receber argumentos.
+
+Exemplo com leitura de bateria em volts via `battery_get()`:
+
+```python
+from __future__ import annotations
+
+import re
+
+from api.command_handlers import CliHandlerContext, WireCommand
+from api.protocol_utils import format_message
+from api.realtime import register_realtime_variable
+
+_VOLTAGE_RE = re.compile(r"(-?\d+(?:\.\d+)?)")
+
+
+@register_realtime_variable("battery", refresh_seconds=1.0, order=0)
+async def get_realtime_battery_from_device(ctx: CliHandlerContext) -> str:
+    wire = format_message([WireCommand.single_request("battery_get", ())])
+    await ctx.send_wire(wire)
+    resp = await ctx.incoming.wait_for(
+        "battery_get",
+        timeout=2.0,
+        predicate=lambda c: c.kind == "single",
+    )
+    payload = " ".join(resp.arguments).strip() or "unknown"
+    m = _VOLTAGE_RE.search(payload)
+    return f"{m.group(1)} V" if m else payload
+```
+
+Depois de registrar as funções (em um módulo `*_handlers.py` carregado pela CLI), execute:
+
+```text
+open_realtime
+```
+
 ### Passo a passo: comando na CLI
 
 **Plugin em `src/commands/`:**
