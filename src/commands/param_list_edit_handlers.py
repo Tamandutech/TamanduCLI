@@ -259,19 +259,21 @@ async def cmd_param_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
             "RED",
         )
         return
-    missing = [i for i in range(expected) if i not in edited_rows]
+    missing = [i for i in range(1, expected + 1) if i not in edited_rows]
     if missing:
         ctx.log(
-            f"⚠ Falta(m) índice(s) de parâmetro (esperados {expected}): {missing!r}",
+            f"⚠ Falta(m) índice(s) de parâmetro (esperados 1..{expected}): {missing!r}",
             "RED",
         )
         return
-    extra = [i for i in edited_rows if i < 0 or i >= expected]
+    extra = [i for i in edited_rows if i < 1 or i > expected]
     if extra:
-        ctx.log(f"⚠ Índice fora do intervalo 0..{expected - 1}: {extra!r}", "RED")
+        ctx.log(f"⚠ Índice fora do intervalo 1..{expected}: {extra!r}", "RED")
         return
 
-    to_apply = [(i, edited_rows[i][0], edited_rows[i][1]) for i in range(expected)]
+    to_apply = [
+        (i, edited_rows[i][0], edited_rows[i][1]) for i in range(1, expected + 1)
+    ]
     if not to_apply:
         ctx.log("Nenhuma linha de parâmetro para enviar.", "YELLOW")
         return
