@@ -116,7 +116,11 @@ class ListWireCollectionSession:
             self._rows[0] = ("header", str(n))
             self._expected = n
             if self._record_raw:
-                self._wire_lines.append(format_wire_command(cmd))
+                self._wire_lines.append(
+                    format_wire_command(
+                        header.to_wire_command(self._wire_name, is_response=True)
+                    )
+                )
         elif cmd.kind == "list_body":
             if not cmd.arguments:
                 return
@@ -125,7 +129,13 @@ class ListWireCollectionSession:
             value = ", ".join(unquote_field(a) for a in cmd.arguments[1:])
             self._rows[idx] = (name, value)
             if self._record_raw:
-                self._wire_lines.append(format_wire_command(cmd))
+                self._wire_lines.append(
+                    format_wire_command(
+                        WireCommand(
+                            self._wire_name, "list_body", True, idx, (name, value)
+                        )
+                    )
+                )
         if self._is_complete():
             self._done.set()
 

@@ -149,11 +149,13 @@ def split_top_level_commas(s: str) -> list[str]:
 
 
 def unquote_field(token: str) -> str:
-    """Strip one pair of surrounding double quotes and unescape \\\" and \\\\."""
+    """Strip surrounding double quotes and unescape until a semantic value remains."""
     t = token.strip()
-    if len(t) >= 2 and t[0] == '"' and t[-1] == '"':
-        inner = t[1:-1]
-        return inner.replace('\\"', '"').replace("\\\\", "\\")
+    while len(t) >= 2 and t[0] == '"' and t[-1] == '"':
+        inner = t[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+        if inner == t:
+            break
+        t = inner
     return t
 
 
