@@ -1,5 +1,9 @@
 """
 map_edit: map_get (wire), collect ``map_get(b,s,…)`` body rows as CSV, save map.txt, edit, apply wire map_add / map_clear / map_SaveRuntime.
+
+CSV columns (``index`` is the array slot; the other five fields are ``MapPoint``):
+
+    index,encoder_left,encoder_right,delta_encoder,speed,point_type
 """
 
 from __future__ import annotations
@@ -9,7 +13,7 @@ import difflib
 import shutil
 from collections import deque
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from prompt_toolkit.shortcuts import confirm
 
@@ -28,6 +32,25 @@ from api.protocol_utils import WireCommand, format_message, parse_message, unquo
 MAP_GET_IDLE_SECONDS = 3.0
 MAP_OUTPUT_PATH = OUTPUT_DIR / "map.txt"
 MAP_INPUT_PATH = INPUT_DIR / "map.txt"
+MAP_CSV_COLUMNS = (
+    "index",
+    "encoder_left",
+    "encoder_right",
+    "delta_encoder",
+    "speed",
+    "point_type",
+)
+MAP_CSV_HEADER = ",".join(MAP_CSV_COLUMNS)
+MAP_POINT_FIELD_COUNT = 5
+_INT32_MIN = -2_147_483_648
+_INT32_MAX = 2_147_483_647
+POINT_TYPE_NAMES = {
+    "AUTO_MARK": 0,
+    "MANUAL_MARK": 1,
+    "STOP_COMMAND_MARK": 2,
+    "UNKNOWN_MARK": 3,
+}
+POINT_TYPE_VALUES = frozenset(POINT_TYPE_NAMES.values())
 
 _map_get_wire_recent: deque[str] = deque(maxlen=8)
 _active_map_get_session: Optional["MapGetSession"] = None
@@ -35,17 +58,18 @@ _active_map_get_session: Optional["MapGetSession"] = None
 
 def _map_get_body_to_csv_line(cmd: WireCommand) -> Optional[str]:
     """
-    One map row from ``map_get(b,s,<idx>, <5 fields>)``.
+    One map row from ``map_get(b,s,<idx>, <MapPoint fields>)``.
 
-    Prefer five arguments (index, time, encMedia, trackStatus, offset). If only four
-    arguments are sent, ``cmd.index`` is prepended as the first CSV column.
+    Prefer six arguments (index plus MapPoint). If only five arguments are sent
+    (encoder_left, encoder_right, delta_encoder, speed, point_type), ``cmd.index``
+    is prepended as the first CSV column.
     """
     if cmd.name.lower() != "map_get" or not cmd.is_response or cmd.kind != "list_body":
         return None
     args = [unquote_field(a) for a in cmd.arguments]
-    if len(args) >= 5:
-        return ",".join(args[:5])
-    if len(args) == 4:
+    if len(args) >= 6:
+        return ",".join(args[:6])
+    if len(args) == MAP_POINT_FIELD_COUNT:
         return f"{cmd.index},{','.join(args)}"
     return None
 
@@ -101,7 +125,9 @@ class MapGetSession:
         if self._idle_handle is not None:
             self._idle_handle.cancel()
             self._idle_handle = None
-        self._idle_handle = self._loop.call_later(MAP_GET_IDLE_SECONDS, self._complete_after_idle)
+        self._idle_handle = self._loop.call_later(
+            MAP_GET_IDLE_SECONDS, self._complete_after_idle
+        )
 
     def _on_row(self, data: str) -> None:
         if self._dead or self._finished:
@@ -146,32 +172,104 @@ def try_feed_map_get_session(message: str) -> bool:
     return fed
 
 
-def _parse_map_rows(path: Path) -> tuple[dict[int, tuple[int, int, int, int, int]], list[str]]:
-    rows: dict[int, tuple[int, int, int, int, int]] = {}
+class MapRow(NamedTuple):
+    """CSV row: array ``index`` plus ``MapPoint`` fields (index is not stored on device in MapPoint)."""
+
+    index: int
+    encoder_left: int
+    encoder_right: int
+    delta_encoder: int
+    speed: float
+    point_type: int
+    speed_wire: str
+
+
+def _is_map_csv_header(s: str) -> bool:
+    parts = [p.strip().lower() for p in s.split(",")]
+    return parts == [c.lower() for c in MAP_CSV_COLUMNS]
+
+
+def _parse_int32(s: str) -> Optional[int]:
+    try:
+        value = int(s, 10)
+    except ValueError:
+        return None
+    if value < _INT32_MIN or value > _INT32_MAX:
+        return None
+    return value
+
+
+def _parse_point_type(s: str) -> Optional[int]:
+    name = s.strip()
+    mapped = POINT_TYPE_NAMES.get(name)
+    if mapped is None:
+        mapped = POINT_TYPE_NAMES.get(name.upper())
+    if mapped is not None:
+        return mapped
+    try:
+        value = int(name, 10)
+    except ValueError:
+        return None
+    if value not in POINT_TYPE_VALUES:
+        return None
+    return value
+
+
+def _parse_map_rows(path: Path) -> tuple[list[MapRow], list[str]]:
+    rows: list[MapRow] = []
     errors: list[str] = []
     text = path.read_text(encoding="utf-8")
     for lineno, line in enumerate(text.splitlines(), start=1):
         s = line.strip()
-        if not s:
+        if not s or _is_map_csv_header(s):
             continue
         parsed = _parse_map_row(s)
         if parsed is None:
             errors.append(f"  line {lineno}: {s[:120]!r}")
             continue
-        idx = parsed[0]
-        rows[idx] = parsed
+        rows.append(parsed)
     return rows, errors
 
 
-def _parse_map_row(s: str) -> Optional[tuple[int, int, int, int, int]]:
+def _parse_map_row(s: str) -> Optional[MapRow]:
     parts = [p.strip() for p in s.split(",")]
-    if len(parts) != 5:
+    if len(parts) != len(MAP_CSV_COLUMNS):
         return None
     try:
-        a, b, c, d, e = (int(p) for p in parts)
+        index = int(parts[0], 10)
     except ValueError:
         return None
-    return a, b, c, d, e
+    encoder_left = _parse_int32(parts[1])
+    encoder_right = _parse_int32(parts[2])
+    delta_encoder = _parse_int32(parts[3])
+    if encoder_left is None or encoder_right is None or delta_encoder is None:
+        return None
+    try:
+        speed = float(parts[4])
+    except ValueError:
+        return None
+    point_type = _parse_point_type(parts[5])
+    if point_type is None:
+        return None
+    return MapRow(
+        index=index,
+        encoder_left=encoder_left,
+        encoder_right=encoder_right,
+        delta_encoder=delta_encoder,
+        speed=speed,
+        point_type=point_type,
+        speed_wire=parts[4],
+    )
+
+
+def _map_row_to_add_arguments(row: MapRow) -> tuple[str, ...]:
+    return (
+        str(row.encoder_left),
+        str(row.encoder_right),
+        str(row.delta_encoder),
+        row.speed_wire,
+        str(row.point_type),
+    )
 
 
 @cli_command
@@ -199,7 +297,8 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
             return
         ensure_output_dir()
         ensure_input_dir()
-        MAP_OUTPUT_PATH.write_text(raw, encoding="utf-8")
+        body = raw if raw.endswith("\n") else raw + "\n"
+        MAP_OUTPUT_PATH.write_text(f"{MAP_CSV_HEADER}\n{body}", encoding="utf-8")
         shutil.copy2(MAP_OUTPUT_PATH, MAP_INPUT_PATH)
         rel_out = MAP_OUTPUT_PATH.relative_to(OUTPUT_DIR.parent)
         rel_in = MAP_INPUT_PATH.relative_to(OUTPUT_DIR.parent)
@@ -249,10 +348,11 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
             ctx.log("Cancelado — nada enviado.", "YELLOW")
             return
 
-        _, edit_errors = _parse_map_rows(MAP_INPUT_PATH)
+        rows, edit_errors = _parse_map_rows(MAP_INPUT_PATH)
         if edit_errors:
             ctx.log(
-                "⚠ O arquivo editado tem linhas que não são index,time,encMedia,trackStatus,offset válidos:",
+                "⚠ O arquivo editado tem linhas que não são "
+                f"{MAP_CSV_HEADER} válidos:",
                 "RED",
             )
             for e in edit_errors:
@@ -261,22 +361,19 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
             return
 
         ctx.log("📤 map_clear", "CYAN")
-        if not await ctx.send_wire(format_message([WireCommand.single_request("map_clear", ())])):
+        if not await ctx.send_wire(
+            format_message([WireCommand.single_request("map_clear", ())])
+        ):
             ctx.log("⚠ Falha ao enviar map_clear; interrompendo.", "RED")
             return
         await asyncio.sleep(1.0)
 
-        map_input_body = MAP_INPUT_PATH.read_text(encoding="utf-8")
-        map_add_rows: list[WireCommand] = []
-        for raw_line in map_input_body.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            parts = [p.strip() for p in line.split(",")]
-            row_idx = int(parts[0])
-            map_add_rows.append(
-                WireCommand("map_add", "list_body", False, row_idx, tuple(parts[1:]))
+        map_add_rows = [
+            WireCommand(
+                "map_add", "list_body", False, row.index, _map_row_to_add_arguments(row)
             )
+            for row in rows
+        ]
         if not await send_homogeneous_list_body_requests_batched(
             ctx,
             map_add_rows,
@@ -286,9 +383,13 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
             ctx.log("⚠ Falha ao enviar; interrompendo.", "RED")
             return
 
-        ctx.log(f"✅ Enviados map_clear e {len(map_add_rows)} linha(s) map_add.", "GREEN")
+        ctx.log(
+            f"✅ Enviados map_clear e {len(map_add_rows)} linha(s) map_add.", "GREEN"
+        )
         await asyncio.sleep(1.0)
-        if not await ctx.send_wire(format_message([WireCommand.single_request("map_SaveRuntime", ())])):
+        if not await ctx.send_wire(
+            format_message([WireCommand.single_request("map_SaveRuntime", ())])
+        ):
             ctx.log("⚠ Falha ao enviar map_SaveRuntime.", "RED")
             return
         ctx.log("📤 map_SaveRuntime enviado.", "GREEN")

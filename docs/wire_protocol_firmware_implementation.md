@@ -41,11 +41,11 @@ Every command has the form:
 name(mode,req_or_resp,…arguments…)
 ```
 
-| Field | Allowed values | Meaning |
-|--------|------------------|---------|
-| `name` | `^[a-zA-Z_][a-zA-Z0-9_]*$` (case preserved on wire; host compares names case-insensitively in several paths) | Command identifier |
-| `mode` | **`s`**, **`h`**, **`b`** | `s` = **single**, `h` = **list header**, `b` = **list body** |
-| `req_or_resp` | **`r`**, **`s`** | `r` = **request** (host→device for outgoing), `s` = **response** (device→host for incoming) |
+| Field         | Allowed values                                                                                               | Meaning                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| `name`        | `^[a-zA-Z_][a-zA-Z0-9_]*$` (case preserved on wire; host compares names case-insensitively in several paths) | Command identifier                                                                          |
+| `mode`        | **`s`**, **`h`**, **`b`**                                                                                    | `s` = **single**, `h` = **list header**, `b` = **list body**                                |
+| `req_or_resp` | **`r`**, **`s`**                                                                                             | `r` = **request** (host→device for outgoing), `s` = **response** (device→host for incoming) |
 
 The host maps `(mode, req_or_resp)` into an internal `WireCommand` with:
 
@@ -95,12 +95,12 @@ name(h,s,T,C,B,j);   ; response (list download)
 
 The host represents this as **`WireListHeader`** (`src/api/protocol_utils.py`): frozen fields **`total_row_count` (`T`)**, **`rows_in_this_message` (`C`)**, **`total_messages` (`B`)**, **`message_index` (`j`)**. **`WireListHeader.to_wire_command`** always emits all four arguments—there is **no** one-argument `h` form on transmit.
 
-| Field | Wire | Meaning |
-|-------|------|---------|
-| `T` | 1st arg | Total **`list_body`** rows in the **whole** operation (valid indices **`1`…`T`**). |
-| `C` | 2nd arg | Number of **`name(b,…)`** commands **in this same UTF-8 message** after this header. |
-| `B` | 3rd arg | Number of **BLE messages** in this transfer; **`j` ∈ {0,…,`B`-1}**. |
-| `j` | 4th arg | **This** message’s index among **`B`** (0-based). |
+| Field | Wire    | Meaning                                                                              |
+| ----- | ------- | ------------------------------------------------------------------------------------ |
+| `T`   | 1st arg | Total **`list_body`** rows in the **whole** operation (valid indices **`1`…`T`**).   |
+| `C`   | 2nd arg | Number of **`name(b,…)`** commands **in this same UTF-8 message** after this header. |
+| `B`   | 3rd arg | Number of **BLE messages** in this transfer; **`j` ∈ {0,…,`B`-1}**.                  |
+| `j`   | 4th arg | **This** message’s index among **`B`** (0-based).                                    |
 
 **Single-message list (entire list in one BLE write):** use **`(T, 1, 1, 0)`** — the CLI helper is **`WireListHeader.single_message(T)`** in code.
 
@@ -132,10 +132,10 @@ So the wire always has **`idx` explicitly**, even if redundant with data inside 
 
 ### 5.1 CLI usage examples (requests)
 
-| Flow | Body shape |
-|------|------------|
-| **map_add** (from `map_edit_handlers`) | CSV row `index,time,encMedia,trackStatus,offset` → `map_add(b,r,<index>,time,encMedia,trackStatus,offset)` — first CSV column is **`idx`**, remaining four fields are arguments. |
-| **param_set** (from `param_list_edit_handlers`) | `param_set(b,r,<paramIndex>,name,value)` — two string arguments after index. |
+| Flow                                            | Body shape                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **map_add** (from `map_edit_handlers`)          | CSV row `index,encoder_left,encoder_right,delta_encoder,speed,point_type` → `map_add(b,r,<index>,encoder_left,encoder_right,delta_encoder,speed,point_type)` — first CSV column is **`idx`** (array slot; not stored in `MapPoint`); remaining five fields are the `MapPoint` arguments. `point_type` is sent as the integer enum (`0`=`AUTO_MARK`, `1`=`MANUAL_MARK`, `2`=`STOP_COMMAND_MARK`, `3`=`UNKNOWN_MARK`). |
+| **param_set** (from `param_list_edit_handlers`) | `param_set(b,r,<paramIndex>,name,value)` — two string arguments after index.                                                                                                                                                                                                                                                                                                                                         |
 
 ---
 
@@ -239,33 +239,33 @@ So list collection sessions fed via **`try_feed`** may consume the line before g
 
 ### 9.1 Mode / role matrix (abbreviated)
 
-| Wire prefix | kind | is_response |
-|-------------|------|----------------|
-| `s,r` | single | False |
-| `s,s` | single | True |
-| `h,r` | list_header | False |
-| `h,s` | list_header | True |
-| `b,r` | list_body | False |
-| `b,s` | list_body | True |
+| Wire prefix | kind        | is_response |
+| ----------- | ----------- | ----------- |
+| `s,r`       | single      | False       |
+| `s,s`       | single      | True        |
+| `h,r`       | list_header | False       |
+| `h,s`       | list_header | True        |
+| `b,r`       | list_body   | False       |
+| `b,s`       | list_body   | True        |
 
 ### 9.2 `WireListHeader` ↔ wire (`h`)
 
-| Field | Wire arg | Notes |
-|--------|----------|--------|
-| `total_row_count` | `T` | Always present (first of four on the wire). |
-| `rows_in_this_message` | `C` | Bodies in this message after this `h`. |
-| `total_messages` | `B` | Total BLE messages in transfer. |
-| `message_index` | `j` | This message’s index in `0..B-1`. |
+| Field                  | Wire arg | Notes                                       |
+| ---------------------- | -------- | ------------------------------------------- |
+| `total_row_count`      | `T`      | Always present (first of four on the wire). |
+| `rows_in_this_message` | `C`      | Bodies in this message after this `h`.      |
+| `total_messages`       | `B`      | Total BLE messages in transfer.             |
+| `message_index`        | `j`      | This message’s index in `0..B-1`.           |
 
 ### 9.3 Python reference map
 
-| Topic | Primary source |
-|--------|----------------|
-| Split / parse / format | `src/api/protocol_utils.py` |
-| `WireListHeader` | `src/api/protocol_utils.py` |
-| List collection + ACK send pacing | `src/api/list_wire.py` |
-| `send_wire` / handler context | `src/api/command_handlers.py` |
-| BLE write | `src/api/ble_nus.py` |
+| Topic                             | Primary source                |
+| --------------------------------- | ----------------------------- |
+| Split / parse / format            | `src/api/protocol_utils.py`   |
+| `WireListHeader`                  | `src/api/protocol_utils.py`   |
+| List collection + ACK send pacing | `src/api/list_wire.py`        |
+| `send_wire` / handler context     | `src/api/command_handlers.py` |
+| BLE write                         | `src/api/ble_nus.py`          |
 
 ---
 
