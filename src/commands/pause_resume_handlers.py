@@ -16,13 +16,13 @@ async def _send_single_ok_command(name: str, ctx: CliHandlerContext) -> None:
         return
 
 
-@cli_command
+@cli_command(aliases=["p"])
 async def cmd_pause(inv: WireCommand, ctx: CliHandlerContext) -> None:
     _ = inv
     await _send_single_ok_command("pause", ctx)
 
 
-@cli_command
+@cli_command(aliases=["run", "r"])
 async def cmd_resume(inv: WireCommand, ctx: CliHandlerContext) -> None:
     _ = inv
     await _send_single_ok_command("resume", ctx)

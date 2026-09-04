@@ -7,6 +7,7 @@ Handlers live under ``commands/`` and register via :func:`cli_command` / :func:`
 from __future__ import annotations
 
 import importlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -160,6 +161,21 @@ def register_cli_command(name: str, handler: CLICommandHandler) -> None:
     CLI_COMMAND_HANDLERS[name.lower()] = handler
 
 
+def _register_cli_command_names(
+    primary: str,
+    handler: CLICommandHandler,
+    aliases: Sequence[str] = (),
+) -> None:
+    register_cli_command(primary, handler)
+    seen = {primary.lower()}
+    for alias in aliases:
+        key = alias.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        register_cli_command(key, handler)
+
+
 def register_incoming_command(name: str, handler: IncomingMessageHandler) -> None:
     INCOMING_MESSAGE_HANDLERS[name.lower()] = handler
 
@@ -184,10 +200,18 @@ FInc = TypeVar("FInc", bound=IncomingMessageHandler)
 
 def cli_command(
     name_or_fn: str | CLICommandHandler | None = None,
+    *,
+    aliases: Sequence[str] = (),
 ) -> CLICommandHandler | Callable[[FCli], FCli]:
+    """
+    Register a CLI command. ``aliases`` are extra names that dispatch to the same handler.
+
+    ``@cli_command`` infers the name from ``cmd_foo`` → ``foo``.
+    ``@cli_command("explicit")`` / ``@cli_command(aliases=["p"])`` set name and/or aliases.
+    """
     if callable(name_or_fn):
         fn = cast(CLICommandHandler, name_or_fn)
-        register_cli_command(_infer_cli_command_name(fn), fn)
+        _register_cli_command_names(_infer_cli_command_name(fn), fn, aliases)
         return fn
     explicit = name_or_fn
 
@@ -197,7 +221,7 @@ def cli_command(
             if isinstance(explicit, str)
             else _infer_cli_command_name(fn)
         )
-        register_cli_command(cmd_name, fn)
+        _register_cli_command_names(cmd_name, fn, aliases)
         return fn
 
     return decorator
