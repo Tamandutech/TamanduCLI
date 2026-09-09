@@ -318,7 +318,10 @@ def message_byte_length(message: str) -> int:
     return len(message.encode("utf-8"))
 
 
-DEFAULT_WIRE_MESSAGE_MAX_BYTES = 256
+# NUS Write Without Response payload is ATT_MTU − 3 (typically 244 after MTU
+# exchange). Firmware packing budget is 240 (kPackBudget). Stay at 240 so one
+# send_wire is one GATT write and does not rely on fragment reassembly.
+DEFAULT_WIRE_MESSAGE_MAX_BYTES = 240
 
 
 def _batched_wire_message_byte_length_pessimistic(
@@ -412,7 +415,7 @@ def pack_list_body_requests_into_batched_wire_messages(
 
 def batch_wire_messages(
     commands: Sequence[WireCommand],
-    max_bytes: int = 256,
+    max_bytes: int = DEFAULT_WIRE_MESSAGE_MAX_BYTES,
     inter_message_suffix: str = ";",
 ) -> list[str]:
     """

@@ -12,7 +12,7 @@ Encoding is **UTF-8** unless stated otherwise. Line endings may be `\n` or `\r\n
 
 - Each string passed to `send_wire` is sent as **one GATT write** to the NUS RX characteristic, UTF-8 encoded (`src/api/ble_nus.py`).
 - The host **does not** fragment a single logical string across multiple writes for size; **your firmware** should accept the full UTF-8 payload of each write (or document MTU limits and negotiate accordingly).
-- Default **packing budget** used when batching list sends is **256 UTF-8 bytes per string** (`DEFAULT_WIRE_MESSAGE_MAX_BYTES` in `src/api/protocol_utils.py`). Align firmware buffers with this expectation if possible.
+- Default **packing budget** used when batching list sends is **240 UTF-8 bytes per string** (`DEFAULT_WIRE_MESSAGE_MAX_BYTES` in `src/api/protocol_utils.py`). That matches firmware `kPackBudget` and stays under a typical NUS Write Without Response payload (`ATT_MTU − 3`, often 244 after MTU exchange) so the host does not rely on GATT fragmentation.
 
 ### 1.2 Trailing semicolon
 
@@ -80,7 +80,7 @@ name(s,s,arg1,arg2,…);   ; response
 ```
 
 - There is **no** row index; all parameters are `arguments` on `WireCommand`.
-- Examples used by the CLI: `map_clear(s,r);`, `map_SaveRuntime(s,r);`, `help(s,r);` (with optional extra args depending on handler).
+- Examples used by the CLI: `map_clear(s,r);`, `map_save(s,r);` (response `map_save(s,s,ok)` or `map_save(s,s,error)`), `help(s,r);` (with optional extra args depending on handler).
 
 ---
 
@@ -132,10 +132,10 @@ So the wire always has **`idx` explicitly**, even if redundant with data inside 
 
 ### 5.1 CLI usage examples (requests)
 
-| Flow                                            | Body shape                                                                                                                                                                                                                                                                                                                                                                                                           |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **map_add** (from `map_edit_handlers`)          | CSV row `index,encoder_left,encoder_right,delta_encoder,speed,point_type` → `map_add(b,r,<index>,encoder_left,encoder_right,delta_encoder,speed,point_type)` — first CSV column is **`idx`** (array slot; not stored in `MapPoint`); remaining five fields are the `MapPoint` arguments. `point_type` is sent as the integer enum (`0`=`AUTO_MARK`, `1`=`MANUAL_MARK`, `2`=`STOP_COMMAND_MARK`, `3`=`UNKNOWN_MARK`). |
-| **param_set** (from `param_list_edit_handlers`) | `param_set(b,r,<paramIndex>,name,value)` — two string arguments after index.                                                                                                                                                                                                                                                                                                                                         |
+| Flow                                            | Body shape                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **map_add** (from `map_edit_handlers`)          | CSV row `index,encoder_left,encoder_right,encoder_derivative,encoder_derivative_average,speed,point_type` → `map_add(b,r,<index>,encoder_left,encoder_right,encoder_derivative,encoder_derivative_average,speed,point_type)` — first CSV column is **`idx`** (array slot; not stored in `MapPoint`); remaining six fields are the `MapPoint` arguments. `point_type` is sent as the integer enum (`0`=`AUTO_MARK`, `1`=`MANUAL_MARK`, `2`=`STOP_COMMAND_MARK`, `3`=`UNKNOWN_MARK`, `4`=`CURVE_START_MARK`, `5`=`CURVE_END_MARK`). |
+| **param_set** (from `param_list_edit_handlers`) | `param_set(b,r,<paramIndex>,name,value)` — two string arguments after index.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 ---
 
@@ -162,7 +162,7 @@ name(h,r,T,C,B,j);name(b,r,idx1,…);name(b,r,idx2,…);…;
 
 1. Let `T` = total number of `list_body` requests to send.
 2. Greedily append bodies to the current chunk while the UTF-8 length of  
-   `header + ";" + body1 + ";" + … + ";"` **+ final `;`** would stay **≤ `max_bytes`** (default **256**).
+   `header + ";" + body1 + ";" + … + ";"` **+ final `;`** would stay **≤ `max_bytes`** (default **240**).
 3. Length estimation uses a **pessimistic** header: `WireListHeader(T, len(chunk), T, max(0, T-1))` so real headers never exceed the budget (`_batched_wire_message_byte_length_pessimistic`).
 4. If a **single** body does not fit even alone, the host still emits it as its own message (may exceed `max_bytes`).
 
@@ -203,6 +203,8 @@ The host’s **`ListWireCollectionSession`** (`src/api/list_wire.py`) collects *
 3. Collection is **complete** when rows **`1`, `2`, …, `T`** are all present: for each `list_body` response, row key is **`WireCommand.index`**, payload is derived from arguments (see §7.2).
 
 **Timeout:** e.g. `param_list` / `help` use **3 seconds** (`wait_until_done`); partial data may still be written / logged.
+
+**`map_get` (from `map_edit_handlers`):** collection is **not** complete on BLE idle. It waits until bodies `1..T` (or `0..T-1`) are present, then saves. The host does **not** write ACKs during this receive (GATT writes overlapping NUS notifications fail). A stall (~10 s without a new row) or overall timeout (~60 s) may still yield a **partial** file; the CLI warns if the last `point_type` is not `STOP_COMMAND_MARK` (2).
 
 ### 7.2 Row payload for `help` / `param_list` style lists
 
