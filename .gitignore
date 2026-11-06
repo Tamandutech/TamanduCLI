@@ -168,3 +168,6 @@ output*.pdf
 # Generated CLI/BLE text exports
 output/
 input/
+
+# macOS
+.DS_Store

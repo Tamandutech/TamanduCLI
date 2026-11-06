@@ -360,6 +360,36 @@ def _map_row_to_add_arguments(row: MapRow) -> tuple[str, ...]:
     )
 
 
+async def apply_map_rows(ctx: CliHandlerContext, rows: list[MapRow]) -> bool:
+    """Replace the device map: ``map_clear``, one ``map_add`` per row, then ``map_save``."""
+    ctx.log("📤 map_clear", "CYAN")
+    if not await ctx.send_wire(
+        format_message([WireCommand.single_request("map_clear", ())])
+    ):
+        ctx.log("⚠ Falha ao enviar map_clear; interrompendo.", "RED")
+        return False
+    await asyncio.sleep(1.0)
+
+    map_add_rows = [
+        WireCommand(
+            "map_add", "list_body", False, row.index, _map_row_to_add_arguments(row)
+        )
+        for row in rows
+    ]
+    if not await send_homogeneous_list_body_requests_batched(
+        ctx,
+        map_add_rows,
+        max_messages_before_ack=DEFAULT_LIST_BATCH_MESSAGES_BEFORE_ACK,
+        ack_timeout=DEFAULT_LIST_BATCH_ACK_TIMEOUT_SECONDS,
+    ):
+        ctx.log("⚠ Falha ao enviar; interrompendo.", "RED")
+        return False
+
+    ctx.log(f"✅ Enviados map_clear e {len(map_add_rows)} linha(s) map_add.", "GREEN")
+    await asyncio.sleep(1.0)
+    return await _send_map_save(ctx)
+
+
 def _map_save_status(cmd: WireCommand) -> str:
     if not cmd.arguments:
         return ""
@@ -523,34 +553,7 @@ async def cmd_map_edit(inv: WireCommand, ctx: CliHandlerContext) -> None:
             ctx.log("Corrija o arquivo e execute map_edit novamente.", "YELLOW")
             return
 
-        ctx.log("📤 map_clear", "CYAN")
-        if not await ctx.send_wire(
-            format_message([WireCommand.single_request("map_clear", ())])
-        ):
-            ctx.log("⚠ Falha ao enviar map_clear; interrompendo.", "RED")
-            return
-        await asyncio.sleep(1.0)
-
-        map_add_rows = [
-            WireCommand(
-                "map_add", "list_body", False, row.index, _map_row_to_add_arguments(row)
-            )
-            for row in rows
-        ]
-        if not await send_homogeneous_list_body_requests_batched(
-            ctx,
-            map_add_rows,
-            max_messages_before_ack=DEFAULT_LIST_BATCH_MESSAGES_BEFORE_ACK,
-            ack_timeout=DEFAULT_LIST_BATCH_ACK_TIMEOUT_SECONDS,
-        ):
-            ctx.log("⚠ Falha ao enviar; interrompendo.", "RED")
-            return
-
-        ctx.log(
-            f"✅ Enviados map_clear e {len(map_add_rows)} linha(s) map_add.", "GREEN"
-        )
-        await asyncio.sleep(1.0)
-        if not await _send_map_save(ctx):
+        if not await apply_map_rows(ctx, rows):
             return
     finally:
         session.close()

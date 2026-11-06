@@ -48,6 +48,9 @@ TERM_COLOR = {
 
 APP_TAG = f"{TERM_COLOR['BRIGHT_MAGENTA']}[TamanduCLI]{TERM_COLOR['RESET']}"
 
+# True: open the CLI without a robot. Bluetooth calls warn and do not run.
+MOCK_MODE = False
+
 
 class Terminal:
     @staticmethod
@@ -58,46 +61,85 @@ class Terminal:
 
 DEVICE_NAME_PREFIX = "TT"
 
+_MOCK_BLUETOOTH_WARNING = "chamada bluetooth não pode ser executada no MOCK_MODE"
+
+
+class _MockNordicUART:
+    """Transport used while MOCK_MODE skips the robot connection."""
+
+    is_connected = True
+
+    async def send_message(self, message: str) -> bool:
+        _ = message
+        Terminal.log(_MOCK_BLUETOOTH_WARNING, "YELLOW")
+        return False
+
+    def set_message_handler(self, handler: object) -> None:
+        _ = handler
+
+    async def disconnect(self) -> None:
+        return None
+
 
 async def main() -> None:
     loop = asyncio.get_running_loop()
     router = IncomingRouter(loop)
 
-    Terminal.log(
-        f"🔍 Buscando dispositivos BLE (prefixo do nome {DEVICE_NAME_PREFIX!r})...",
-        "CYAN",
-    )
-    devices: list[BLEDevice] = []
-    while not devices:
-        devices = await scan_devices(timeout=3.0, name_prefix=DEVICE_NAME_PREFIX)
-        if not devices:
-            Terminal.log(
-                f"❌ Nenhum dispositivo com prefixo do nome {DEVICE_NAME_PREFIX!r}. Tentando novamente em 1 segundo...",
-                "YELLOW",
-            )
-            await asyncio.sleep(1)
-
-    Terminal.log(f"📱 Encontrado(s) {len(devices)} dispositivo(s).", "GREEN")
-
-    if len(devices) == 1:
-        selected_device = devices[0]
-        label = selected_device.name or "sem nome"
-        Terminal.log(
-            f"✓ Apenas um dispositivo encontrado — usando {label} ({selected_device.address}).",
-            "GREEN",
-        )
+    if MOCK_MODE:
+        Terminal.log("MOCK_MODE ativo — sem conexão Bluetooth.", "YELLOW")
+        nus = _MockNordicUART()
     else:
-        try:
-            selected_device = await ChoiceInput(
-                message=f"Selecione um dispositivo (prefixo do nome {DEVICE_NAME_PREFIX!r}):",
-                options=[(d, f"{d.name} ({d.address})") for d in devices],
-                default=devices[0],
-            ).prompt_async()
-        except (KeyboardInterrupt, EOFError):
-            selected_device = None
-    if selected_device is None:
-        Terminal.log("👋 Nenhum dispositivo selecionado — saindo.", "YELLOW")
-        return
+        Terminal.log(
+            f"🔍 Buscando dispositivos BLE (prefixo do nome {DEVICE_NAME_PREFIX!r})...",
+            "CYAN",
+        )
+        devices: list[BLEDevice] = []
+        while not devices:
+            devices = await scan_devices(timeout=3.0, name_prefix=DEVICE_NAME_PREFIX)
+            if not devices:
+                Terminal.log(
+                    f"❌ Nenhum dispositivo com prefixo do nome {DEVICE_NAME_PREFIX!r}. Tentando novamente em 1 segundo...",
+                    "YELLOW",
+                )
+                await asyncio.sleep(1)
+
+        Terminal.log(f"📱 Encontrado(s) {len(devices)} dispositivo(s).", "GREEN")
+
+        if len(devices) == 1:
+            selected_device = devices[0]
+            label = selected_device.name or "sem nome"
+            Terminal.log(
+                f"✓ Apenas um dispositivo encontrado — usando {label} ({selected_device.address}).",
+                "GREEN",
+            )
+        else:
+            try:
+                selected_device = await ChoiceInput(
+                    message=f"Selecione um dispositivo (prefixo do nome {DEVICE_NAME_PREFIX!r}):",
+                    options=[(d, f"{d.name} ({d.address})") for d in devices],
+                    default=devices[0],
+                ).prompt_async()
+            except (KeyboardInterrupt, EOFError):
+                selected_device = None
+        if selected_device is None:
+            Terminal.log("👋 Nenhum dispositivo selecionado — saindo.", "YELLOW")
+            return
+
+        nus = NordicUARTService(
+            log=lambda m, c: Terminal.log(m, c),
+            on_disconnect_msg=lambda m, c: Terminal.log(m, c),
+        )
+
+        def ble_dispatch_line(message: str) -> None:
+            loop.call_soon_threadsafe(
+                lambda m=message: dispatch_ble_notification(m, router)
+            )
+
+        nus.set_message_handler(ble_dispatch_line)
+
+        if not await nus.connect(selected_device):
+            Terminal.log("❌ Falha ao conectar ao dispositivo", "RED")
+            return
 
     completer = WordCompleter(sorted(CLI_COMMAND_HANDLERS.keys()), ignore_case=True)
     registered_lower = frozenset(k.lower() for k in CLI_COMMAND_HANDLERS)
@@ -115,22 +157,6 @@ async def main() -> None:
     def log(message: str, color: str = "WHITE") -> None:
         Terminal.log(message, color)
 
-    nus = NordicUARTService(
-        log=lambda m, c: Terminal.log(m, c),
-        on_disconnect_msg=lambda m, c: Terminal.log(m, c),
-    )
-
-    def ble_dispatch_line(message: str) -> None:
-        loop.call_soon_threadsafe(
-            lambda m=message: dispatch_ble_notification(m, router)
-        )
-
-    nus.set_message_handler(ble_dispatch_line)
-
-    if not await nus.connect(selected_device):
-        Terminal.log("❌ Falha ao conectar ao dispositivo", "RED")
-        return
-
     ctx = CliHandlerContext(
         nus=nus,
         incoming=router,
@@ -138,7 +164,10 @@ async def main() -> None:
         log=log,
     )
 
-    Terminal.log("🚀 Console BLE do robô pronto!", "GREEN")
+    if MOCK_MODE:
+        Terminal.log("🚀 Console pronto (MOCK_MODE).", "GREEN")
+    else:
+        Terminal.log("🚀 Console BLE do robô pronto!", "GREEN")
     Terminal.log(
         "💡 Protocolo wire: name(s,r); name(h,r,size); name(b,r,idx,args…);", "YELLOW"
     )
@@ -193,8 +222,9 @@ async def main() -> None:
     except Exception as e:
         Terminal.log(f"❌ Erro no loop principal: {e!s}", "RED")
     finally:
-        Terminal.log("🔌 Desconectando...", "YELLOW")
-        await nus.disconnect()
+        if not MOCK_MODE:
+            Terminal.log("🔌 Desconectando...", "YELLOW")
+            await nus.disconnect()
 
 
 if __name__ == "__main__":
